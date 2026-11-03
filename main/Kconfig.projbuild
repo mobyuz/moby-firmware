@@ -1,0 +1,11 @@
+menu "Moby firmware"
+
+config MOBY_F1_LED_TEST
+    bool "Enable F1 bench test for the red LED"
+    default n
+    help
+        During a bench test, turn on GPIO21 for an accepted Talk press while
+        the physical switch enables the microphone path. Disable before normal use, where
+        the red LED is reserved for an audio capture session.
+
+endmenu

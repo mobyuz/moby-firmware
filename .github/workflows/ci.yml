@@ -1,0 +1,29 @@
+name: Firmware build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test controls and face rendering
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -I main \
+            main/moby_controls.c main/moby_face.c tests/f1.c -o "$RUNNER_TEMP/moby-f1-test"
+          "$RUNNER_TEMP/moby-f1-test"
+      - name: Build ESP32-S3 firmware
+        run: >-
+          docker run --rm
+          --mount "type=bind,source=$PWD,target=/project"
+          --workdir /project
+          --env IDF_GIT_SAFE_DIR=/project
+          espressif/idf:v5.5.6 idf.py build size
