@@ -2,7 +2,6 @@
 
 #include <inttypes.h>
 
-#include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_chip_info.h"
@@ -15,9 +14,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "moby_audio.h"
 #include "moby_controls.h"
 #include "moby_face.h"
 #include "moby_oled.h"
+#include "moby_pins.h"
 #include "sdkconfig.h"
 
 #if ESP_IDF_VERSION != ESP_IDF_VERSION_VAL(5, 5, 6)
@@ -33,20 +34,20 @@ static const char *const TAG = "moby";
 static esp_err_t init_controls(void)
 {
     const gpio_config_t inputs = {
-        .pin_bit_mask = (1ULL << GPIO_NUM_7) | (1ULL << GPIO_NUM_10),
+        .pin_bit_mask = (1ULL << MOBY_PIN_TALK) | (1ULL << MOBY_PIN_MUTE),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     const gpio_config_t output = {
-        .pin_bit_mask = 1ULL << GPIO_NUM_21,
+        .pin_bit_mask = 1ULL << MOBY_PIN_RED_LED,
         .mode = GPIO_MODE_OUTPUT,
     };
-    ESP_RETURN_ON_ERROR(gpio_set_level(GPIO_NUM_21, 0), TAG, "preload red LED off");
+    ESP_RETURN_ON_ERROR(gpio_set_level(MOBY_PIN_RED_LED, 0), TAG, "preload red LED off");
     ESP_RETURN_ON_ERROR(gpio_config(&output), TAG, "configure red LED");
     return gpio_config(&inputs);
 }
 
-static void run_f1(void)
+static void run_controls(void)
 {
     esp_err_t error = init_controls();
     if (error != ESP_OK) {
@@ -55,7 +56,7 @@ static void run_f1(void)
     }
 
     moby_controls_t controls;
-    moby_controls_init(&controls, gpio_get_level(GPIO_NUM_10) != 0, gpio_get_level(GPIO_NUM_7) == 0,
+    moby_controls_init(&controls, gpio_get_level(MOBY_PIN_MUTE) != 0, gpio_get_level(MOBY_PIN_TALK) == 0,
                        (uint32_t)(esp_timer_get_time() / 1000));
     QueueHandle_t views = xQueueCreate(1, sizeof(moby_face_view_t));
     if (views) {
@@ -73,16 +74,37 @@ static void run_f1(void)
 #ifdef CONFIG_MOBY_F1_LED_TEST
     ESP_LOGW(TAG, "F1 red LED bench test enabled");
 #endif
+#ifdef CONFIG_MOBY_F2_MIC_TEST
+    TaskHandle_t audio = NULL;
+    uint32_t audio_event = 0;
+    if (xTaskCreate(moby_audio_task, "moby_audio", 8192, NULL, 3, &audio) == pdPASS) {
+        ESP_LOGI(TAG, "f2=ready");
+    } else {
+        ESP_LOGE(TAG, "f2=error audio task unavailable");
+    }
+#endif
 
     for (;;) {
         const bool was_muted = controls.muted;
         const bool was_down = controls.talk_down;
         const bool had_attention = controls.attention;
-        moby_controls_update(&controls, gpio_get_level(GPIO_NUM_10) != 0, gpio_get_level(GPIO_NUM_7) == 0,
+        moby_controls_update(&controls, gpio_get_level(MOBY_PIN_MUTE) != 0, gpio_get_level(MOBY_PIN_TALK) == 0,
                              (uint32_t)(esp_timer_get_time() / 1000));
 #ifdef CONFIG_MOBY_F1_LED_TEST
         if (controls.attention != had_attention) {
-            gpio_set_level(GPIO_NUM_21, controls.attention);
+            gpio_set_level(MOBY_PIN_RED_LED, controls.attention);
+        }
+#endif
+#ifdef CONFIG_MOBY_F2_MIC_TEST
+        if (audio && controls.attention != had_attention) {
+            uint32_t command = MOBY_AUDIO_RELEASE;
+            if (controls.attention) {
+                command = MOBY_AUDIO_PRESS;
+            } else if (controls.muted) {
+                command = MOBY_AUDIO_MUTE;
+            }
+            audio_event += MOBY_AUDIO_EVENT_STEP;
+            xTaskNotify(audio, audio_event | command, eSetValueWithOverwrite);
         }
 #endif
         if (controls.muted != was_muted) {
@@ -130,5 +152,5 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "f0=pass memory_profile=%s", flash_bytes == 16U * mib ? "N16R8" : "N8R8");
-    run_f1();
+    run_controls();
 }

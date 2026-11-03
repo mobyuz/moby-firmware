@@ -8,4 +8,12 @@ config MOBY_F1_LED_TEST
         the physical switch enables the microphone path. Disable before normal use, where
         the red LED is reserved for an audio capture session.
 
+config MOBY_F2_MIC_TEST
+    bool "Enable F2 bench test for the INMP441 microphone"
+    depends on !MOBY_F1_LED_TEST
+    default n
+    help
+        Capture while Talk is held and the physical microphone path is enabled.
+        Report aggregate PCM levels over UART after an authorized bench capture.
+
 endmenu
