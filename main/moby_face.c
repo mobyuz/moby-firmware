@@ -4,6 +4,8 @@
 
 #include <string.h>
 
+#include "moby_font.h"
+
 static void pixel(uint8_t *frame, int x, int y)
 {
     // SSD1306 pages store eight vertical pixels per column byte.
@@ -26,6 +28,33 @@ static void eye(uint8_t *frame, int center, int width, int height)
     rounded_rect(frame, center - width / 2, 28 - height / 2, width, height, 4);
 }
 
+// Draws the text centered in rows of MOBY_FACE_TEXT_COLUMNS, ten pixels apart.
+static void draw_text(uint8_t *frame, const char *text)
+{
+    enum { ADVANCE = MOBY_FONT_WIDTH + 1, LINE = 10 };
+    int length = 0;
+    while (length < MOBY_FACE_TEXT_MAX && text[length]) {
+        ++length;
+    }
+    const int rows = (length + MOBY_FACE_TEXT_COLUMNS - 1) / MOBY_FACE_TEXT_COLUMNS;
+    const int top = (MOBY_FACE_HEIGHT - (rows * LINE - (LINE - MOBY_FONT_HEIGHT))) / 2;
+    for (int row = 0; row < rows; ++row) {
+        const int first = row * MOBY_FACE_TEXT_COLUMNS;
+        const int count = length - first < MOBY_FACE_TEXT_COLUMNS ? length - first : MOBY_FACE_TEXT_COLUMNS;
+        const int left = (MOBY_FACE_WIDTH - (count * ADVANCE - 1)) / 2;
+        for (int index = 0; index < count; ++index) {
+            const uint8_t *glyph = moby_font_glyph(text[first + index]);
+            for (int col = 0; col < MOBY_FONT_WIDTH; ++col) {
+                for (int bit = 0; bit < MOBY_FONT_HEIGHT; ++bit) {
+                    if (glyph[col] & (1U << bit)) {
+                        pixel(frame, left + index * ADVANCE + col, top + row * LINE + bit);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void moby_face_render(uint8_t frame[MOBY_FACE_BYTES], moby_face_view_t view, bool blink)
 {
     static const struct {
@@ -46,6 +75,12 @@ void moby_face_render(uint8_t frame[MOBY_FACE_BYTES], moby_face_view_t view, boo
     memset(frame, 0, MOBY_FACE_BYTES);
     if ((unsigned)view.expression >= MOBY_FACE_COUNT) {
         view.expression = MOBY_FACE_ERROR;
+    }
+    // Text replaces the face, except where the face carries a safety signal.
+    if (view.text[0] && view.expression != MOBY_FACE_ERROR && view.expression != MOBY_FACE_MUTED &&
+        view.expression != MOBY_FACE_DISCONNECTED) {
+        draw_text(frame, view.text);
+        return;
     }
 
     if (view.expression == MOBY_FACE_HAPPY) {

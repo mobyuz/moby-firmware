@@ -74,10 +74,10 @@ static esp_err_t run_oled(QueueHandle_t views)
         vTaskDelay(pdMS_TO_TICKS(50));
         moby_face_view_t next = view;
         xQueuePeek(views, &next, 0);
-        const bool blink_next = !next.attention &&
+        const bool blink_next = !next.attention && !next.text[0] &&
             (next.expression == MOBY_FACE_DISCONNECTED || next.expression == MOBY_FACE_IDLE) &&
             esp_timer_get_time() / 1000 % 3000 >= 2800;
-        if (next.expression == view.expression && next.attention == view.attention && blink_next == blink) {
+        if (moby_face_view_equal(&next, &view) && blink_next == blink) {
             continue;
         }
         view = next;
