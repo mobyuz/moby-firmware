@@ -72,15 +72,41 @@ idf.py -B build/f2 -p $boardPort flash monitor
 
 Kundalik F0/F1 image’ini yuklash uchun odatiy `idf.py -p $boardPort flash monitor` buyrug‘idan foydalaning. F2 sozlamasi `build/f2`da alohida qoladi.
 
+## F3: USB aloqa, seans va juftlash
+
+F3 odatiy image’ga moby-protocol’ning USB v1 aloqasini qo‘shadi. Protokol **USB-Serial-JTAG** portida (plata USB-C porti) yuradi. Jurnal va konsol UART0’da qoladi, USB port faqat kadrlar uchun. Yuz F3’siz ham ishlaydi: aloqa bo‘lmasa ko‘zlar kiprik qoqadi, apparat mute doim birinchi. Qaror va chegaralar: [ADR 0001](docs/adr/0001-f3-usb-link.md).
+
+- `components/moby_protocol/` moby-protocol’ning `9032acb` commitidan **vaqtinchalik** ko‘chirma. Reliz tegi chiqqach, uni reliz artefakti almashtiradi. Kelib chiqishi va nazorat summalari `PROVENANCE.md`da.
+- Ulanishda darhol `hello`, `hello_ack` kelguncha har soniya qayta yuboriladi, 3 soniyada yangi nonce bilan qayta boshlanadi. Seansdan keyin har 2 soniyada `heartbeat`. Desktop tomondan 3 ta heartbeat javobsiz qolsa seans tugaydi, buferlar tozalanadi, yuz uzilishni ko‘rsatadi. Protokolda desktop heartbeat’i yo‘q, shuning uchun desktop kamida har 2 soniyada biror buyruq (masalan bo‘sh `set_config`) yuborishi kerak.
+- Buyruqlar: `expression`, `display_text`, `cancel`, `set_config`, `pair_begin`, `pair_set_key`. `servo_pose` va `audio_play_*` uchun `E_UNSUPPORTED`. Desktop audio kadrlari rad etiladi. Bu bosqichda mikrofon ishga tushmaydi, audio yo‘li yo‘q, odatiy image hech qanday imkoniyat e’lon qilmaydi.
+- Juftlash: `pair_begin` faqat juftlanmagan robotda qabul qilinadi, juftlangan robot `E_STATE` qaytaradi. Talk tugmasi bosilsa `pair_button_confirmed` ketadi, shundan keyingina `pair_set_key` qabul qilinadi. Talk’ni 10 soniya ushlab turish juftlashni o‘chiradi va `pair_reset` yuboradi. `device_id` birinchi yuklanishda tasodifiy 128 bitdan yaratiladi, `pair_key` NVS’da. Kalit, nonce va dalil jurnalga chiqmaydi.
+
+F3 host testlari (MSVC yoki `cc`, cJSON va mbedTLS ESP-IDF daraxtidan olinadi):
+
+```powershell
+.\tests\run_f3.ps1
+```
+
+Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 95 boshqaruv qatori, COBS, HMAC, sessiya dalili) va 42 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
+
+**Hali platani talab qiladigan narsalar (tekshirilmagan):**
+
+- USB-Serial-JTAG: port ochilgach `hello` yetib borishi, port yopilganda holat, hostning DTR/RTS bilan chipni qayta yuklashi, qayta yuklashda ROM matni. TinyUSB CDC bilan taqqoslash va 14-ochiq qaror.
+- Donanim tasodifiy sonlari (SAR ADC entropiyasi), NVS’da `device_id` va `pair_key`ning qayta yuklashdan keyin saqlanishi, mbedTLS HMAC’ning apparat tezlatgichli yo‘li.
+- OLED’da `display_text` ko‘rinishi va aloqa yurib turganda 10 ms tugma so‘rovi vaqti.
+- Haqiqiy desktop bilan seans, 10 soniyalik bosish va juftlash oqimi. `pair_key` NVS’da shifrlanmagan.
+
 ## CI
 
-GitHub Actions F1 va F2 C11 host testlarini ishga tushiradi. Odatiy firmware va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
+GitHub Actions F1, F2 va F3 C11 host testlarini ishga tushiradi (F3 testlari `espressif/idf:v5.5.6` image’ida). Odatiy firmware va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
 
 ## Mahalliy tekshiruv
 
 2026-yil 3-noyabrda F0 va F1 Windows’da ESP-IDF v5.5.6 bilan yig‘ildi. F0 ilova binari 170 208 bayt, F1 ilova binari 207 744 bayt bo‘ldi. `esptool image_info` F1 binarining ESP32-S3 targeti va yaxlitligini tasdiqladi. Beshta F1 host testi va `actionlint` tekshiruvi o‘tdi. F0 xotira o‘lchovi, F1 OLED, tugma, apparat mute va LED sinovi real platada kutilmoqda.
 
 F2 uchun odatiy build va 235 520 baytli stend buildi ESP-IDF v5.5.6 bilan o‘tdi. `esptool` ikkala image yaxlitligini tasdiqladi. Mikrofon qabuli faqat stend image’iga kiritilgan. To‘rtta F2 va beshta F1 host testi hamda `actionlint` o‘tdi. INMP441 signali va apparat mute real platada tekshiriladi.
+
+F3 uchun 2026-yil 4-noyabrda ESP-IDF v5.5.6 bilan odatiy image yig‘ildi: ilova binari 293 376 bayt (umumiy 293 253). F2 stend image’i 237 392 bayt. F3 testlari MSVC (`/W4 /WX`) va Debian gcc 12 (`-Wall -Wextra -Werror -pedantic`) bilan o‘tdi, F1 va F2 testlari ham o‘tdi. USB aloqasi, juftlash va NVS real platada hali tekshirilmagan.
 
 ## Litsenziya
 
