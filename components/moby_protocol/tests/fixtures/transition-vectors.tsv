@@ -1,0 +1,10 @@
+# from	allowed (one 0 or 1 per state, in the order of the rows)
+idle	111011111
+listening	111000111
+thinking	101111111
+speaking	110111111
+happy	111010111
+confused	111001111
+error	111000111
+muted	100000111
+disconnected	100000111
