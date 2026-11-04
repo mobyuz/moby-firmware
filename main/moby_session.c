@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "moby_font.h"
+
 _Static_assert(MOBY_FACE_IDLE + 0 == MOBY_EXPRESSION_IDLE + 0 &&
                    MOBY_FACE_LISTENING + 0 == MOBY_EXPRESSION_LISTENING + 0 &&
                    MOBY_FACE_THINKING + 0 == MOBY_EXPRESSION_THINKING + 0 &&
@@ -522,16 +524,11 @@ static void on_expression(moby_session_t *session, uint32_t now_ms, const moby_m
     }
 }
 
-// Keeps printable ASCII and shows anything else as '?', one per code point.
+// Turns the UTF-8 text into display cells: ASCII, Russian and Uzbek Cyrillic and the Uzbek turned comma
+// show as themselves, anything else as '?', one cell per code point.
 static void set_text(moby_session_t *session, const char *utf8)
 {
-    size_t length = 0;
-    for (const uint8_t *p = (const uint8_t *)utf8; *p && length < MOBY_USB_SCREEN_TEXT_MAX_CHARS; ++length) {
-        const bool plain = *p >= 0x20 && *p < 0x7f;
-        session->text[length] = plain ? (char)*p : '?';
-        p += *p < 0x80 ? 1 : *p < 0xe0 ? 2 : *p < 0xf0 ? 3 : 4;
-    }
-    session->text[length] = '\0';
+    moby_font_decode(utf8, session->text, MOBY_USB_SCREEN_TEXT_MAX_CHARS);
 }
 
 static void on_pair_begin(moby_session_t *session, uint32_t now_ms, const moby_msg_t *msg)

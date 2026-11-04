@@ -11,7 +11,7 @@ enum {
     MOBY_FACE_WIDTH = 128,
     MOBY_FACE_HEIGHT = 64,
     MOBY_FACE_BYTES = MOBY_FACE_WIDTH * MOBY_FACE_HEIGHT / 8,
-    // Display text is bounded: at most this many ASCII characters, drawn in rows of MOBY_FACE_TEXT_COLUMNS.
+    // Display text is bounded: at most this many cells (see moby_font.h), drawn in rows of MOBY_FACE_TEXT_COLUMNS.
     MOBY_FACE_TEXT_MAX = 64,
     MOBY_FACE_TEXT_COLUMNS = 21,
 };

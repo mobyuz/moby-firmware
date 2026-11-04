@@ -23,6 +23,8 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pedantic -I main \
             main/moby_pcm.c tests/f2.c -lm -o "$RUNNER_TEMP/moby-f2-test"
           "$RUNNER_TEMP/moby-f2-test"
+      - name: Test display text (UTF-8 and Cyrillic glyphs)
+        run: MOBY_HOST_OUT="$RUNNER_TEMP/moby-f4" sh tests/run_f4.sh
       - name: Check the vendored protocol files and the privacy invariants in the sources
         run: |
           sh tests/check_vendored.sh

@@ -904,6 +904,14 @@ static void test_display_text(void)
     assert(view_of(fx)->text[0] == '\0');
     drain(fx);
 
+    // Cyrillic and the Uzbek turned comma show as their own display cells, one per letter.
+    command(fx, "c-0004", "display_text",
+            "{\"text\":\"\xd0\x8e\xd0\xb7\xd0\xb1\xd0\xb5\xd0\xba O\xca\xbbz\",\"ttl_ms\":3000}");
+    step(fx, 0);
+    expect_ok(fx, "c-0004");
+    assert(strcmp(view_of(fx)->text, "\xc2\xa8\xa2\xa6\xab O\xca" "z") == 0);
+    drain(fx);
+
     // The longest text stays inside the bound, and a newer text replaces an older one.
     char data[400] = "{\"text\":\"";
     for (int i = 0; i < 64; ++i) {
