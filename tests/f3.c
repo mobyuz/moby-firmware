@@ -1295,7 +1295,6 @@ static void test_proof_separator_vectors(void)
     static const uint8_t key[32] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
     static const char *const proofs[2] = { "185994479a6bf3aa2a407b238b04be856d5549a734348e297ae6922e0875566f",
                                            "f8f34535a6bb97dbb355eebea575b1a9ec2547e75163a8fab7b1d3187aca8bed" };
-    static const char *const sessions[2] = { "c", "bc" };
     for (int attempt = 0; attempt < 2; ++attempt) {
         fx_t *fx = fx_init(key, 0);
         snprintf(fx->identity.device_id, sizeof fx->identity.device_id, "ab");
@@ -1316,7 +1315,6 @@ static void test_proof_separator_vectors(void)
         desktop(fx, json);
         step(fx, 1);
         assert(fx->session.established && fx->session.authenticated == (attempt == 0));
-        (void)sessions;
     }
 }
 
