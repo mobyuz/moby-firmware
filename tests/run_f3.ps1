@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Builds and runs the F3 host tests with MSVC. The Linux CI job runs run_f3.sh
+# with cc instead; both compile the same sources.
+#
+#   .\tests\run_f3.ps1                 uses .toolchain\esp-idf for cJSON and mbedTLS
+#   $env:IDF_PATH = '...'; .\tests\run_f3.ps1
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$idf = if ($env:IDF_PATH) { $env:IDF_PATH } else { Join-Path $root '.toolchain\esp-idf' }
+$out = if ($env:MOBY_HOST_OUT) { $env:MOBY_HOST_OUT } else { Join-Path $env:TEMP 'moby-f3' }
+New-Item -ItemType Directory -Force $out | Out-Null
+
+if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $saved = @{ TEMP = $env:TEMP; TMP = $env:TMP }
+    $dump = cmd /c "`"$install\Common7\Tools\VsDevCmd.bat`" -arch=x64 -no_logo >nul 2>nul && set"
+    foreach ($line in $dump) { if ($line -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
+    $env:TEMP = $saved.TEMP; $env:TMP = $saved.TMP
+}
+
+$cjson = Join-Path $idf 'components\json\cJSON'
+$mbed = Join-Path $idf 'components\mbedtls\mbedtls'
+$host_inc = Join-Path $root 'tests\host'
+$main = Join-Path $root 'main'
+$proto = Join-Path $root 'components\moby_protocol'
+
+function Invoke-Cl {
+    & cl /nologo @args
+    if ($LASTEXITCODE -ne 0) { throw "cl failed: $args" }
+}
+
+Push-Location $out
+try {
+    # Third-party code is compiled as is, without our warning flags.
+    Invoke-Cl /c /W0 /I $cjson "$cjson\cJSON.c"
+    foreach ($name in 'md', 'sha256', 'platform_util', 'constant_time') {
+        Invoke-Cl /c /W0 /I $host_inc /I "$mbed\include" /I "$mbed\library" "$mbed\library\$name.c"
+    }
+    $third = @('cJSON.obj', 'md.obj', 'sha256.obj', 'platform_util.obj', 'constant_time.obj')
+    $ours = @(
+        "$proto\c\moby_usb_codec.c", "$main\moby_json.c", "$main\moby_session.c", "$main\moby_config.c",
+        "$main\moby_link.c", "$main\moby_hmac.c", "$main\moby_face.c", "$main\moby_font.c"
+    )
+    $flags = @('/std:c11', '/W4', '/WX', '/D_CRT_SECURE_NO_WARNINGS', '/I', $main, '/I', "$proto\include", '/I', $cjson, '/I', $host_inc, '/I', "$mbed\include")
+    foreach ($test in 'vectors', 'f3') {
+        New-Item -ItemType Directory -Force "$out\$test" | Out-Null
+        Invoke-Cl @flags "/Fo:$out\$test\" "/Fe:$out\$test.exe" @ours "$root\tests\$test.c" @third
+    }
+    & "$out\vectors.exe" "$proto\tests\fixtures"
+    if ($LASTEXITCODE -ne 0) { throw 'vectors failed' }
+    & "$out\f3.exe" "$proto\tests\fixtures"
+    if ($LASTEXITCODE -ne 0) { throw 'f3 failed' }
+}
+finally {
+    Pop-Location
+}
