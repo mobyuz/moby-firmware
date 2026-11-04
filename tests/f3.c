@@ -311,6 +311,9 @@ static void release(fx_t *fx)
     controls(fx, false, false, false);
 }
 
+// The config object that ack() sends; tests change it to check what an ack may set.
+static const char *ack_config = "{}";
+
 static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t *key, bool accepted)
 {
     char id[MOBY_ID_MAX + 1];
@@ -335,9 +338,9 @@ static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t 
     }
     snprintf(json, sizeof json,
              "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":5,\"data\":{\"accepted\":%s%s%s%s%s,"
-             "\"config\":{}}}",
+             "\"config\":%s}}",
              id, accepted ? "true" : "false", session ? ",\"session_id\":\"" : "", session ? session : "",
-             session ? "\"" : "", proof);
+             session ? "\"" : "", proof, ack_config);
     desktop(fx, json);
 }
 
@@ -1419,6 +1422,46 @@ static void test_bad_and_missing_proof(void)
     }
 }
 
+static void test_ack_config_needs_a_proven_session(void)
+{
+    static const char settings[] = "{\"wake_sensitivity\":7,\"speaker_volume\":8,\"vad_silence_ms\":300,\"max_utterance_ms\":2000}";
+    uint8_t wrong[32];
+    memcpy(wrong, TEST_KEY, sizeof wrong);
+    wrong[0] ^= 1;
+    // A paired robot: a wrong proof and a missing proof change nothing, a correct proof applies the settings.
+    const uint8_t *proofs[3] = { wrong, NULL, TEST_KEY };
+    for (int variant = 0; variant < 3; ++variant) {
+        fx_t *fx = fx_init(TEST_KEY, 0);
+        char hello[JSON_MAX];
+        fx->connected = true;
+        step(fx, 0);
+        assert(next_tx(fx, hello));
+        ack_config = settings;
+        ack(fx, hello, "session_1", proofs[variant], true);
+        ack_config = "{}";
+        step(fx, 10);
+        assert(fx->session.established && fx->session.authenticated == (variant == 2));
+        const bool applied = fx->session.config.wake_sensitivity == 7 && fx->session.config.speaker_volume == 8 &&
+                             fx->session.config.vad_silence_ms == 300 && fx->session.config.max_utterance_ms == 2000;
+        assert(applied == (variant == 2));
+        if (variant != 2) {
+            assert(fx->session.config.wake_sensitivity == 50 && fx->session.config.speaker_volume == 50 &&
+                   fx->session.config.vad_silence_ms == 800 && fx->session.config.max_utterance_ms == 15000);
+        }
+    }
+    // An unpaired robot has no key to prove, and its open session takes the ack's settings.
+    fx_t *fx = fx_init(NULL, 0);
+    char hello[JSON_MAX];
+    fx->connected = true;
+    step(fx, 0);
+    assert(next_tx(fx, hello));
+    ack_config = settings;
+    ack(fx, hello, "session_1", NULL, true);
+    ack_config = "{}";
+    step(fx, 10);
+    assert(fx->session.established && fx->session.config.speaker_volume == 8);
+}
+
 static void test_proof_ignored_when_unpaired(void)
 {
     fx_t *fx = fx_init(NULL, 0);
@@ -1915,6 +1958,7 @@ int main(int argc, char **argv)
         { "proof accepted (protocol vector)", test_proof_accepted_with_protocol_vectors },
         { "proof separator vectors", test_proof_separator_vectors },
         { "bad and missing proof", test_bad_and_missing_proof },
+        { "ack config needs a proven session", test_ack_config_needs_a_proven_session },
         { "proof ignored when unpaired", test_proof_ignored_when_unpaired },
         { "mute wins in every state", test_mute_wins_in_every_state },
         { "mute beats error and disconnect", test_mute_beats_error_and_disconnect },

@@ -463,7 +463,10 @@ static void on_hello_ack(moby_session_t *session, uint32_t now_ms, const moby_ms
     session->unanswered = 0;
     session->next_heartbeat_ms = now_ms + MOBY_HEARTBEAT_MS;
     session->face = MOBY_EXPRESSION_IDLE;
-    apply_patch(session, &msg->u.hello_ack.config);
+    // Settings from an ack the robot could not verify are ignored, like every other command of such a session.
+    if (proven) {
+        apply_patch(session, &msg->u.hello_ack.config);
+    }
     set_state(session, MOBY_SESSION_IDLE);
     note(session, session->authenticated ? "session established authenticated=1" : "session established authenticated=0");
     moby_out_t *out = push_event(session, now_ms, MOBY_OUT_MUTE_CHANGED);
