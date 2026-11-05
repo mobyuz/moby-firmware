@@ -55,6 +55,8 @@
 #define MOBY_USB_NONCE_BYTES 16u
 #define MOBY_USB_PROOF_BYTES 32u
 #define MOBY_USB_PAIR_KEY_BYTES 32u
+#define MOBY_USB_ROBOT_PROOF_LABEL "moby-robot-proof-v1"
+#define MOBY_USB_ROBOT_PROOF_LABEL_LEN 19u
 
 /* Control message names (the envelope `name`). */
 #define MOBY_USB_MSG_HELLO "hello" /* event, from the robot */
@@ -67,6 +69,7 @@
 #define MOBY_USB_MSG_ERROR "error" /* event, from the robot */
 #define MOBY_USB_MSG_PAIR_BUTTON_CONFIRMED "pair_button_confirmed" /* event, from the robot */
 #define MOBY_USB_MSG_PAIR_RESET "pair_reset" /* event, from the robot */
+#define MOBY_USB_MSG_SESSION_PROOF "session_proof" /* event, from the robot */
 #define MOBY_USB_MSG_HELLO_ACK "hello_ack" /* response, from the desktop */
 #define MOBY_USB_MSG_EXPRESSION "expression" /* command, from the desktop */
 #define MOBY_USB_MSG_DISPLAY_TEXT "display_text" /* command, from the desktop */

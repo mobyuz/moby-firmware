@@ -348,3 +348,36 @@ moby_status moby_session_proof_input(const uint8_t nonce[MOBY_USB_NONCE_BYTES],
     *output_length = total;
     return MOBY_OK;
 }
+
+moby_status moby_robot_proof_input(const uint8_t desktop_nonce[MOBY_USB_NONCE_BYTES],
+                                   const uint8_t robot_nonce[MOBY_USB_NONCE_BYTES],
+                                   const char *device_id, const char *session_id,
+                                   uint8_t *output, size_t output_capacity,
+                                   size_t *output_length) {
+    if (desktop_nonce == NULL || robot_nonce == NULL || output == NULL ||
+        output_length == NULL || !moby_stable_id_valid(device_id) ||
+        !moby_stable_id_valid(session_id)) {
+        return MOBY_ERR_BAD_ARGUMENT;
+    }
+    const size_t device_length = strlen(device_id);
+    const size_t session_length = strlen(session_id);
+    const size_t prefix = MOBY_USB_ROBOT_PROOF_LABEL_LEN + 1 + 2 * MOBY_USB_NONCE_BYTES;
+    const size_t total = prefix + device_length + 1 + session_length;
+    if (total > output_capacity) {
+        return MOBY_ERR_OUTPUT_TOO_SMALL;
+    }
+    size_t at = 0;
+    memcpy(output, MOBY_USB_ROBOT_PROOF_LABEL, MOBY_USB_ROBOT_PROOF_LABEL_LEN);
+    at += MOBY_USB_ROBOT_PROOF_LABEL_LEN;
+    output[at++] = 0;
+    memcpy(output + at, desktop_nonce, MOBY_USB_NONCE_BYTES);
+    at += MOBY_USB_NONCE_BYTES;
+    memcpy(output + at, robot_nonce, MOBY_USB_NONCE_BYTES);
+    at += MOBY_USB_NONCE_BYTES;
+    memcpy(output + at, device_id, device_length);
+    at += device_length;
+    output[at++] = 0;
+    memcpy(output + at, session_id, session_length);
+    *output_length = total;
+    return MOBY_OK;
+}

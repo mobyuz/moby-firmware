@@ -113,6 +113,19 @@ moby_status moby_session_proof_input(const uint8_t nonce[MOBY_USB_NONCE_BYTES],
                                      uint8_t *output, size_t output_capacity,
                                      size_t *output_length);
 
+/*
+ * Builds the bytes the robot's session_proof covers: MOBY_USB_ROBOT_PROOF_LABEL,
+ * a zero byte, the desktop nonce, the robot nonce, the device ID, a zero byte,
+ * then the session ID. The proof is HMAC-SHA256(pair_key, input). The label
+ * keeps it apart from the session proof input above. The longest input is 181
+ * bytes.
+ */
+moby_status moby_robot_proof_input(const uint8_t desktop_nonce[MOBY_USB_NONCE_BYTES],
+                                   const uint8_t robot_nonce[MOBY_USB_NONCE_BYTES],
+                                   const char *device_id, const char *session_id,
+                                   uint8_t *output, size_t output_capacity,
+                                   size_t *output_length);
+
 #ifdef __cplusplus
 }
 #endif
