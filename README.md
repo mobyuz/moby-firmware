@@ -87,7 +87,7 @@ F3 host testlari (MSVC yoki `cc`, cJSON va mbedTLS ESP-IDF daraxtidan olinadi):
 .\tests\run_f3.ps1
 ```
 
-Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 95 boshqaruv qatori, COBS, HMAC, sessiya dalili) va 42 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
+Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 95 boshqaruv qatori, COBS, HMAC, sessiya dalili) va 42 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build default` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
 
 **Hali platani talab qiladigan narsalar (tekshirilmagan):**
 
@@ -96,9 +96,35 @@ Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o�
 - OLED’da `display_text` ko‘rinishi va aloqa yurib turganda 10 ms tugma so‘rovi vaqti.
 - Haqiqiy desktop bilan seans, 10 soniyalik bosish va juftlash oqimi. `pair_key` NVS’da shifrlanmagan.
 
+## F4: tugma bilan audio oqimi
+
+F4 talk tugmasi bosilganda INMP441 ovozini desktopga oqim qilib yuboradi. U **alohida image** sifatida yig‘iladi va odatiy image’da hech qanday mikrofon kodi yo‘q (sabab, muqobillar va dalillar: [ADR 0002](docs/adr/0002-f4-push-to-talk.md)). Simlar F2 bilan bir xil: BCLK GPIO4, WS GPIO5, SD GPIO6 (mute kaliti orqali), qizil LED GPIO21.
+
+```powershell
+idf.py -B build/f4 -D SDKCONFIG=build/f4/sdkconfig -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.f4' build size
+sh tests/check_image.sh build/f4 ptt
+idf.py -B build/f4 -p $boardPort flash monitor
+```
+
+- Oqim faqat quyidagilarning **hammasi** bajarilganda boshlanadi: talk tugmasi yangi bosildi, apparat mute ochiq, seans o‘rnatilgan va **autentifikatsiya qilingan** (juftlangan robot to‘g‘ri dalil bergan), robot bo‘sh (idle) holatda, `usb_pcm` imkoniyati va PSRAM halqasi bor. Juftlanmagan robot, juftlash jarayoni, yuklanish, aloqa uzilishi va mute holatida mikrofon ishlamaydi. Wake word va doimiy tinglash yo‘q.
+- Format: `audio_start` (`reason=button`, `pcm_s16le`, 16 kHz, mono, 20 ms), keyin 640 baytli robot audio kadrlari (kind 2, `stream_id` 1 dan, ketma-ketlik 0 dan, bo‘shliqsiz), keyin `audio_end` (`frames`, `duration_ms`).
+- To‘xtash: tugma qo‘yib yuborilsa (yig‘ilgan butun kadrlar yuboriladi, so‘ng `audio_end`), `max_utterance_ms` (odatda 15 s), desktop `cancel`, apparat mute (bufer tashlanadi va nollanadi, `audio_end` sababi `mute`), 10 soniyalik bosish. Aloqa uzilsa yoki desktop jim qolsa yozish to‘xtaydi, bufer tozalanadi, hech kimga xabar yuborilmaydi. Bufer to‘lib ketsa (USB orqada) oqim `E_AUDIO_OVERRUN` bilan tugaydi, yuz va tugmalar bloklanmaydi.
+- Qizil LED va “listening” yuzi bitta holatdan (`stream.phase`) olinadi: LED mikrofon ishlaganda doim yonadi. Desktop `listening` yuzini buyura olmaydi.
+- Konvertatsiya shartnomasi (wake word o‘qitishi aynan shuni ishlatishi shart): `pcm16 = (int32)slot >> 16`, chap slot, birlik kuchaytirish (Q8 = 256), qirqish bilan, DC olib tashlanmaydi, filtr yo‘q. Boshlang‘ich 260 ms (13 blok) mikrofon ishga tushishi uchun tashlanadi.
+- Matn: `display_text` UTF-8 dan o‘qiladi. Rus va o‘zbek kirillitsasi, `oʻ gʻ` uchun ʻ belgisi (U+02BB, U+02BC, ‘ ’) 5×7 shriftda ko‘rsatiladi. Noto‘g‘ri bayt ketma-ketligi va shriftda yo‘q harf bitta `?`. Yozuvlar bir-biriga o‘girilmaydi.
+
+Host testlari (MSVC `/W4 /WX`; Linux’da `sh tests/run_f4.sh`):
+
+```powershell
+.\tests\run_f4.ps1
+sh tests/check_sources.sh
+```
+
+**Platani talab qiladigan narsalar (tekshirilmagan):** haqiqiy I²S darajalari va 24→16 bit natijasi, mikrofonning 260 ms ishga tushishi, DMA 16 kHz va 32 bitli slotlarda, PSRAM yozish/o‘qish vaqti, USB-Serial-JTAG o‘tkazuvchanligi (taxminan 32 KB/s audio va boshqaruv trafigi, haqiqiy desktop o‘qiganda), 1,28 s halqa yetarliligi, qizil LED, mute kalitining vaqti, har bosishda I²S kanalini yaratish/o‘chirish kechikishi, OLED’da kirillitsa o‘qilishi va audio sifati. Kechikish va o‘tkazuvchanlik o‘lchanmagan.
+
 ## CI
 
-GitHub Actions F1, F2 va F3 C11 host testlarini ishga tushiradi (F3 testlari `espressif/idf:v5.5.6` image’ida). Odatiy firmware va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
+GitHub Actions F1, F2, F3 va F4 C11 host testlarini ishga tushiradi (F3 va F4 testlari `espressif/idf:v5.5.6` image’ida). Odatiy firmware, F4 va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
 
 ## Mahalliy tekshiruv
 
@@ -107,6 +133,8 @@ GitHub Actions F1, F2 va F3 C11 host testlarini ishga tushiradi (F3 testlari `es
 F2 uchun odatiy build va 235 520 baytli stend buildi ESP-IDF v5.5.6 bilan o‘tdi. `esptool` ikkala image yaxlitligini tasdiqladi. Mikrofon qabuli faqat stend image’iga kiritilgan. To‘rtta F2 va beshta F1 host testi hamda `actionlint` o‘tdi. INMP441 signali va apparat mute real platada tekshiriladi.
 
 F3 uchun 2026-yil 4-noyabrda ESP-IDF v5.5.6 bilan odatiy image yig‘ildi: ilova binari 293 376 bayt (umumiy 293 253). F2 stend image’i 237 392 bayt. F3 testlari MSVC (`/W4 /WX`) va Debian gcc 12 (`-Wall -Wextra -Werror -pedantic`) bilan o‘tdi, F1 va F2 testlari ham o‘tdi. USB aloqasi, juftlash va NVS real platada hali tekshirilmagan.
+
+F4 uchun 2026-yil 5-noyabrda ESP-IDF v5.5.6 bilan uch image yig‘ildi (ogohlantirishsiz): odatiy image 296 449 bayt, F4 (tugma bilan audio) 317 789 bayt, F2 stend 237 829 bayt (`idf.py size` “Total image size”; `.bin` fayllari 296 560, 317 904 va 237 952 bayt). `check_image.sh` uchala image’ni, `check_sources.sh` va `check_vendored.sh` o‘tdi. MSVC (`/W4 /WX`) bilan o‘tdi: 8 matn, 37 F4, 43 F3, vektorlar, 5 F1 va 4 F2 testi. Linux gcc (`-Wall -Wextra -Werror -pedantic`) va `actionlint` bu mashinada ishga tushirilmadi (Docker o‘chiq, `actionlint` o‘rnatilmagan); ular CI’da ishlaydi. Platada hech narsa sinalmadi va yuklanmadi.
 
 ## Litsenziya
 
