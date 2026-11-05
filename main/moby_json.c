@@ -246,8 +246,8 @@ static bool parse_patch(const cJSON *object, moby_config_patch_t *patch)
 
 static bool parse_hello_ack(const cJSON *data, moby_msg_t *msg)
 {
-    static const char *const keys[] = { "accepted", "session_id", "proof", "config" };
-    if (!keys_known(data, keys, 4) || !get_bool(data, "accepted", &msg->u.hello_ack.accepted)) {
+    static const char *const keys[] = { "accepted", "session_id", "proof", "desktop_nonce", "config" };
+    if (!keys_known(data, keys, 5) || !get_bool(data, "accepted", &msg->u.hello_ack.accepted)) {
         return false;
     }
     const cJSON *session = field(data, "session_id", true);
@@ -258,13 +258,26 @@ static bool parse_hello_ack(const cJSON *data, moby_msg_t *msg)
         strcpy(msg->u.hello_ack.session_id, session->valuestring);
         msg->u.hello_ack.has_session_id = true;
     }
-    const cJSON *proof = field(data, "proof", true);
+    // proof and desktop_nonce come together or not at all, and neither may be null.
+    const cJSON *proof = field(data, "proof", false);
     if (proof) {
         if (!cJSON_IsString(proof) ||
             !moby_hex_decode(proof->valuestring, strlen(proof->valuestring), msg->u.hello_ack.proof, MOBY_USB_PROOF_BYTES)) {
             return false;
         }
         msg->u.hello_ack.has_proof = true;
+    }
+    const cJSON *desktop_nonce = field(data, "desktop_nonce", false);
+    if (desktop_nonce) {
+        if (!cJSON_IsString(desktop_nonce) ||
+            !moby_hex_decode(desktop_nonce->valuestring, strlen(desktop_nonce->valuestring), msg->u.hello_ack.desktop_nonce,
+                             MOBY_USB_NONCE_BYTES)) {
+            return false;
+        }
+        msg->u.hello_ack.has_desktop_nonce = true;
+    }
+    if (msg->u.hello_ack.has_proof != msg->u.hello_ack.has_desktop_nonce) {
+        return false;
     }
     return parse_patch(field(data, "config", false), &msg->u.hello_ack.config);
 }
@@ -513,6 +526,9 @@ size_t moby_json_build(const moby_identity_t *identity, const moby_out_t *out, c
     case MOBY_OUT_PAIR_RESET:
         name = MOBY_USB_MSG_PAIR_RESET;
         break;
+    case MOBY_OUT_SESSION_PROOF:
+        name = MOBY_USB_MSG_SESSION_PROOF;
+        break;
     case MOBY_OUT_COMMAND_OK:
         name = MOBY_USB_MSG_COMMAND_OK;
         break;
@@ -564,6 +580,12 @@ size_t moby_json_build(const moby_identity_t *identity, const moby_out_t *out, c
             (unsigned)out->u.audio_end.stream_id, end_reasons[(unsigned)out->u.audio_end.reason % 6U],
             out->u.audio_end.frames, out->u.audio_end.duration_ms);
         break;
+    case MOBY_OUT_SESSION_PROOF: {
+        char proof[2 * MOBY_USB_PROOF_BYTES + 1] = { 0 };
+        moby_hex_encode(out->u.session_proof.proof, MOBY_USB_PROOF_BYTES, proof);
+        put(&writer, "{\"proof\":\"%s\"}", proof);
+        break;
+    }
     case MOBY_OUT_PAIR_BUTTON_CONFIRMED:
     case MOBY_OUT_PAIR_RESET:
     case MOBY_OUT_COMMAND_OK:

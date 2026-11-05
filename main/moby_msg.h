@@ -67,8 +67,11 @@ typedef struct {
             bool accepted;
             bool has_session_id;
             bool has_proof;
+            // Present exactly when proof is; the parser rejects one without the other.
+            bool has_desktop_nonce;
             char session_id[MOBY_ID_MAX + 1];
             uint8_t proof[MOBY_USB_PROOF_BYTES];
+            uint8_t desktop_nonce[MOBY_USB_NONCE_BYTES];
             moby_config_patch_t config;
         } hello_ack;
         struct {
@@ -105,6 +108,7 @@ typedef enum {
     MOBY_OUT_ERROR,
     MOBY_OUT_PAIR_BUTTON_CONFIRMED,
     MOBY_OUT_PAIR_RESET,
+    MOBY_OUT_SESSION_PROOF,
     MOBY_OUT_COMMAND_OK,
     MOBY_OUT_COMMAND_ERROR,
     MOBY_OUT_AUDIO_START,
@@ -168,6 +172,10 @@ typedef struct {
             uint32_t frames;
             uint32_t duration_ms;
         } audio_end;
+        // The robot's proof of the pair key (see moby_session.c). A MAC, not a secret, once sent.
+        struct {
+            uint8_t proof[MOBY_USB_PROOF_BYTES];
+        } session_proof;
         // code and detail point at string literals; detail never carries a key or proof.
         struct {
             const char *code;

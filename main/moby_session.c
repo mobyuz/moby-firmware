@@ -594,6 +594,23 @@ static bool proof_ok(const moby_session_t *session, const moby_msg_t *msg)
     return match;
 }
 
+// The robot's own proof of the pair key for the desktop. The caller has already verified the desktop's proof; this
+// is never reached for a bad or missing one, so a peer that cannot prove the key gets no HMAC output from the robot.
+// The input starts with a label that no desktop proof input can start with (see moby_robot_proof_input), so neither
+// proof can stand in for the other. The nonces and the input are public values, but the key never leaves pair_key.
+static bool make_robot_proof(const moby_session_t *session, const moby_msg_t *msg, uint8_t out[MOBY_USB_PROOF_BYTES])
+{
+    uint8_t input[MOBY_USB_ROBOT_PROOF_LABEL_LEN + 1 + 2 * MOBY_USB_NONCE_BYTES + 2 * MOBY_ID_MAX + 2];
+    size_t length = 0;
+    if (!msg->u.hello_ack.has_desktop_nonce || !session->ops.hmac_sha256 ||
+        moby_robot_proof_input(msg->u.hello_ack.desktop_nonce, session->nonce, session->identity.device_id,
+                               msg->u.hello_ack.session_id, input, sizeof input, &length) != MOBY_OK ||
+        !session->ops.hmac_sha256(session->ops.ctx, session->pair_key, sizeof session->pair_key, input, length, out)) {
+        return false;
+    }
+    return true;
+}
+
 static void apply_patch(moby_session_t *session, const moby_config_patch_t *patch)
 {
     if (patch->has_wake_sensitivity) {
@@ -625,7 +642,10 @@ static void on_hello_ack(moby_session_t *session, uint32_t now_ms, const moby_ms
         moby_session_protocol_error(session, now_ms, MOBY_USB_E_BAD_FRAME, "hello_ack without session_id");
         return;
     }
-    const bool proven = !session->paired || proof_ok(session, msg);
+    // The desktop's proof comes first. Only when it verified does the robot compute its own, and a robot that
+    // cannot compute it does not call the session authenticated.
+    uint8_t robot_proof[MOBY_USB_PROOF_BYTES] = { 0 };
+    const bool proven = !session->paired || (proof_ok(session, msg) && make_robot_proof(session, msg, robot_proof));
     session->authenticated = session->paired && proven;
     session->established = true;
     session->hello_open = false;
@@ -640,6 +660,15 @@ static void on_hello_ack(moby_session_t *session, uint32_t now_ms, const moby_ms
     }
     set_state(session, MOBY_SESSION_IDLE);
     note(session, session->authenticated ? "session established authenticated=1" : "session established authenticated=0");
+    // The robot's proof is the first event of an authenticated session, before the opening mute_changed and long
+    // before any audio_start (which needs authenticated).
+    if (session->authenticated) {
+        moby_out_t *proof_out = push_event(session, now_ms, MOBY_OUT_SESSION_PROOF);
+        if (proof_out) {
+            memcpy(proof_out->u.session_proof.proof, robot_proof, sizeof robot_proof);
+        }
+    }
+    memset(robot_proof, 0, sizeof robot_proof);
     moby_out_t *out = push_event(session, now_ms, MOBY_OUT_MUTE_CHANGED);
     if (out) {
         out->u.mute.muted = session->muted;
