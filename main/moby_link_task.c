@@ -21,6 +21,10 @@
 #include "moby_link.h"
 #include "moby_session.h"
 #include "moby_transport_usb_jtag.h"
+#include "sdkconfig.h"
+#ifdef CONFIG_MOBY_F4_PTT_AUDIO
+#include "moby_capture.h"
+#endif
 
 static const char *const TAG = "moby_link";
 
@@ -111,20 +115,34 @@ esp_err_t moby_link_task_start(void)
     snprintf(identity.hw_rev, sizeof identity.hw_rev, "esp32s3-v%u.%u", (unsigned)(chip.revision / 100),
              (unsigned)(chip.revision % 100));
     version_text(identity.fw_version, esp_app_get_description()->version);
-    // No audio and no servo in this stage, so the default image advertises no capability.
+    // No servo in this stage. Audio is advertised only by an image that has the capture path and got its PSRAM ring.
     identity.capabilities = 0;
-
-    ESP_RETURN_ON_ERROR(moby_transport_usb_jtag_init(&transport), TAG, "USB-Serial-JTAG driver");
-    const moby_session_ops_t ops = {
+    moby_session_ops_t ops = {
         .fill_random = op_random,
         .hmac_sha256 = op_hmac,
         .store_key = op_store_key,
         .erase_key = op_erase_key,
         .log = op_log,
     };
+    const moby_pcm_source_t *pcm_source = NULL;
+#ifdef CONFIG_MOBY_F4_PTT_AUDIO
+    const esp_err_t capture_error = moby_capture_init();
+    if (capture_error == ESP_OK) {
+        identity.capabilities |= MOBY_CAP_USB_PCM;
+        ops.capture_set = moby_capture_set;
+        ops.capture_discard = moby_capture_discard;
+        pcm_source = moby_capture_source();
+    } else {
+        // No ring, no audio: the capability is not advertised and the session never opens a stream.
+        ESP_LOGE(TAG, "f4=off capture=%s", esp_err_to_name(capture_error));
+    }
+#endif
+
+    ESP_RETURN_ON_ERROR(moby_transport_usb_jtag_init(&transport), TAG, "USB-Serial-JTAG driver");
     moby_session_init(&session, &identity, stored.paired ? stored.pair_key : NULL, &ops, now_ms());
     memset(&stored.pair_key, 0, sizeof stored.pair_key);
     moby_link_init(&usb_link, &transport, &session);
+    moby_link_set_source(&usb_link, pcm_source);
 
     lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(lock, ESP_ERR_NO_MEM, TAG, "lock");

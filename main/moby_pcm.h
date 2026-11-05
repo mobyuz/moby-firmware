@@ -47,8 +47,16 @@ void moby_pcm_convert(const uint32_t *stereo, int16_t *mono, size_t frames);
 // The same as moby_pcm_convert (the F2 bench uses this name).
 void moby_pcm_from_i2s(const uint32_t *stereo, int16_t *mono, size_t frames);
 
-// Writes samples as little-endian bytes, the byte order of an audio frame payload.
-void moby_pcm_to_le_bytes(const int16_t *samples, size_t count, uint8_t *bytes);
+// Writes samples as little-endian bytes, the byte order of an audio frame payload. Inline, so the link needs no
+// other part of this file and an image without audio links none of it.
+static inline void moby_pcm_to_le_bytes(const int16_t *samples, size_t count, uint8_t *bytes)
+{
+    for (size_t i = 0; i < count; ++i) {
+        const uint16_t value = (uint16_t)samples[i];
+        bytes[2 * i] = (uint8_t)(value & 0xffU);
+        bytes[2 * i + 1] = (uint8_t)(value >> 8);
+    }
+}
 
 typedef struct {
     uint64_t square_sum;

@@ -35,15 +35,6 @@ void moby_pcm_from_i2s(const uint32_t *stereo, int16_t *mono, size_t frames)
     moby_pcm_convert(stereo, mono, frames);
 }
 
-void moby_pcm_to_le_bytes(const int16_t *samples, size_t count, uint8_t *bytes)
-{
-    for (size_t i = 0; i < count; ++i) {
-        const uint16_t value = (uint16_t)samples[i];
-        bytes[2 * i] = (uint8_t)(value & 0xffU);
-        bytes[2 * i + 1] = (uint8_t)(value >> 8);
-    }
-}
-
 void moby_pcm_measure(moby_pcm_stats_t *stats, const int16_t *pcm, size_t samples)
 {
     for (size_t i = 0; i < samples; ++i) {
