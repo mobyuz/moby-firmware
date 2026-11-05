@@ -223,7 +223,8 @@ static void test_random_inputs(void)
             memcpy(input, base, length);
             const unsigned flips = (seed = seed * 1664525U + 1013904223U) >> 30;
             for (unsigned f = 0; f < flips; ++f) {
-                input[(seed = seed * 1664525U + 1013904223U) % length] = (uint8_t)(seed >> 24);
+                seed = seed * 1664525U + 1013904223U;
+                input[seed % length] = (uint8_t)(seed >> 24);
             }
         }
         input[length] = '\0';

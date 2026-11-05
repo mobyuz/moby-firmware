@@ -165,7 +165,8 @@ static fx_t *fx_init(const uint8_t *pair_key, uint32_t capabilities)
     snprintf(fx->identity.fw_version, sizeof fx->identity.fw_version, "0.1.0");
     fx->identity.capabilities = capabilities;
     fx->transport = (moby_transport_t){ fx, tr_connected, tr_read, tr_write, tr_idle };
-    const moby_session_ops_t ops = { fx, op_random, op_hmac, op_store, op_erase, op_log };
+    // No audio in these tests: the capture hooks stay empty.
+    const moby_session_ops_t ops = { fx, op_random, op_hmac, op_store, op_erase, op_log, NULL, NULL };
     moby_session_init(&fx->session, &fx->identity, pair_key, &ops, fx->now);
     moby_link_init(&fx->link, &fx->transport, &fx->session);
     return fx;
