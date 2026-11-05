@@ -4,13 +4,35 @@
 
 #include <math.h>
 
-void moby_pcm_from_i2s(const uint32_t *stereo, int16_t *mono, size_t frames)
+int16_t moby_pcm_sample(uint32_t slot, unsigned gain_q8)
+{
+    if (gain_q8 > MOBY_PCM_GAIN_Q8_MAX) {
+        gain_q8 = MOBY_PCM_GAIN_Q8_MAX;
+    }
+    // Reinterpret the slot as signed and shift arithmetically without relying on the compiler's choice for
+    // negative values: shift the unsigned word, then sign-extend the 16 bits that are left.
+    const uint32_t top = slot >> MOBY_PCM_SHIFT;
+    const int32_t value = top >= 0x8000U ? (int32_t)top - 65536 : (int32_t)top;
+    if (gain_q8 == 256U) {
+        return (int16_t)value;
+    }
+    // Floor division by 256 for negative products too, so the rounding does not depend on the sign.
+    const int32_t product = value * (int32_t)gain_q8;
+    const int32_t scaled = product >= 0 ? product / 256 : -((-product + 255) / 256);
+    return (int16_t)(scaled > INT16_MAX ? INT16_MAX : scaled < INT16_MIN ? INT16_MIN : scaled);
+}
+
+void moby_pcm_convert(const uint32_t *stereo, int16_t *mono, size_t frames)
 {
     for (size_t frame = 0; frame < frames; ++frame) {
-        // Left slot, 24-bit two's complement in bits 31..8. Keep the top 16 bits at unity gain.
-        const int32_t bits = (int32_t)(stereo[frame * MOBY_I2S_SLOTS] >> 16);
-        mono[frame] = (int16_t)(bits > INT16_MAX ? bits - 65536 : bits);
+        // The left slot, as the contract says.
+        mono[frame] = moby_pcm_sample(stereo[frame * MOBY_I2S_SLOTS], MOBY_PCM_GAIN_Q8);
     }
+}
+
+void moby_pcm_from_i2s(const uint32_t *stereo, int16_t *mono, size_t frames)
+{
+    moby_pcm_convert(stereo, mono, frames);
 }
 
 void moby_pcm_measure(moby_pcm_stats_t *stats, const int16_t *pcm, size_t samples)

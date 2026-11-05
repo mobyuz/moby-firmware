@@ -17,6 +17,9 @@
 #include "moby_audio.h"
 #include "moby_controls.h"
 #include "moby_face.h"
+#ifdef CONFIG_MOBY_F3_USB_LINK
+#include "moby_link_task.h"
+#endif
 #include "moby_oled.h"
 #include "moby_pins.h"
 #include "sdkconfig.h"
@@ -71,6 +74,16 @@ static void run_controls(void)
         ESP_LOGW(TAG, "OLED task unavailable");
     }
     ESP_LOGI(TAG, "f1=ready muted=1 talk=%s", controls.talk_down ? "down" : "up");
+#ifdef CONFIG_MOBY_F3_USB_LINK
+    // The face and the controls do not depend on the link. If it fails to start, F1 behaviour stays.
+    const esp_err_t link_error = moby_link_task_start();
+    if (link_error == ESP_OK) {
+        ESP_LOGI(TAG, "f3=ready transport=usb_serial_jtag");
+    } else {
+        ESP_LOGE(TAG, "f3=fail link=%s", esp_err_to_name(link_error));
+    }
+    moby_face_view_t shown = { .expression = MOBY_FACE_MUTED };
+#endif
 #ifdef CONFIG_MOBY_F1_LED_TEST
     ESP_LOGW(TAG, "F1 red LED bench test enabled");
 #endif
@@ -113,6 +126,26 @@ static void run_controls(void)
         if (controls.talk_down != was_down) {
             ESP_LOGI(TAG, "talk=%s", controls.talk_down ? "down" : "up");
         }
+#ifdef CONFIG_MOBY_F3_USB_LINK
+        (void)had_attention;
+        // The hardware mute reaches the session and the face first; nothing the desktop sends can undo it.
+        moby_link_task_controls(&controls, (uint32_t)(esp_timer_get_time() / 1000));
+        moby_face_view_t view = {
+            .expression = controls.muted ? MOBY_FACE_MUTED : MOBY_FACE_DISCONNECTED,
+            .attention = controls.attention,
+        };
+        moby_face_view_t from_session;
+        if (moby_link_task_view(&from_session)) {
+            view = from_session;
+        }
+        if (controls.muted) {
+            view = (moby_face_view_t){ .expression = MOBY_FACE_MUTED };
+        }
+        if (views && !moby_face_view_equal(&view, &shown)) {
+            xQueueOverwrite(views, &view);
+            shown = view;
+        }
+#else
         if (views && (controls.muted != was_muted || controls.attention != had_attention)) {
             const moby_face_view_t view = {
                 .expression = controls.muted ? MOBY_FACE_MUTED : MOBY_FACE_DISCONNECTED,
@@ -120,6 +153,7 @@ static void run_controls(void)
             };
             xQueueOverwrite(views, &view);
         }
+#endif
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

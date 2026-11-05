@@ -18,17 +18,36 @@ jobs:
       - name: Test controls, face rendering and microphone processing
         run: |
           cc -std=c11 -Wall -Wextra -Werror -pedantic -I main \
-            main/moby_controls.c main/moby_face.c tests/f1.c -o "$RUNNER_TEMP/moby-f1-test"
+            main/moby_controls.c main/moby_face.c main/moby_font.c tests/f1.c -o "$RUNNER_TEMP/moby-f1-test"
           "$RUNNER_TEMP/moby-f1-test"
           cc -std=c11 -Wall -Wextra -Werror -pedantic -I main \
             main/moby_pcm.c tests/f2.c -lm -o "$RUNNER_TEMP/moby-f2-test"
           "$RUNNER_TEMP/moby-f2-test"
-      - name: Build ESP32-S3 firmware and F2 bench profile
+      - name: Check the vendored protocol files and the privacy invariants in the sources
+        run: |
+          sh tests/check_vendored.sh
+          sh tests/check_sources.sh
+      - name: Test the USB link, session, pairing, display text and push to talk
+        # cJSON and mbedTLS come from the ESP-IDF tree in the image, the same copies the firmware links.
         run: >-
           docker run --rm
           --mount "type=bind,source=$PWD,target=/project"
           --workdir /project
           --env IDF_GIT_SAFE_DIR=/project
           espressif/idf:v5.5.6 bash -c
-          'idf.py build size && idf.py -B build/f2 -D SDKCONFIG=build/f2/sdkconfig
-          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.f2" build size'
+          'MOBY_HOST_OUT=/tmp/moby-f3 sh tests/run_f3.sh &&
+          MOBY_HOST_OUT=/tmp/moby-f4 sh tests/run_f4.sh'
+      - name: Build the default, push-to-talk and F2 bench images
+        run: >-
+          docker run --rm
+          --mount "type=bind,source=$PWD,target=/project"
+          --workdir /project
+          --env IDF_GIT_SAFE_DIR=/project
+          espressif/idf:v5.5.6 bash -c
+          'idf.py build size && sh tests/check_image.sh build default &&
+          idf.py -B build/f4 -D SDKCONFIG=build/f4/sdkconfig
+          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.f4" build size &&
+          sh tests/check_image.sh build/f4 ptt &&
+          idf.py -B build/f2 -D SDKCONFIG=build/f2/sdkconfig
+          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.f2" build size &&
+          sh tests/check_image.sh build/f2 f2'

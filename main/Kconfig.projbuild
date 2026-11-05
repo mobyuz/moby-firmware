@@ -1,5 +1,28 @@
 menu "Moby firmware"
 
+config MOBY_F3_USB_LINK
+    bool "Enable the F3 USB control link"
+    depends on !MOBY_F2_MIC_TEST
+    default y
+    help
+        Talk the Moby control protocol over the USB-Serial-JTAG port: pairing,
+        heartbeats, expression and display text commands. The port carries
+        frames only and the console stays on UART0. No audio is ever sent in
+        this stage. The F2 microphone bench image does not include the link.
+
+config MOBY_F4_PTT_AUDIO
+    bool "Enable F4 push-to-talk audio stream (microphone)"
+    depends on MOBY_F3_USB_LINK && !MOBY_F1_LED_TEST
+    default n
+    help
+        Stream the INMP441 microphone to the paired, authenticated desktop while
+        the Talk button is held and the hardware mute switch lets the microphone
+        path through. Advertises the usb_pcm capability. The microphone clocks
+        are off at all other times, the red LED is lit exactly while the
+        microphone runs, and nothing records on boot, in pairing, without a
+        session, or after a disconnect. Off by default: the default image has no
+        audio code at all (see docs/adr/0002-f4-push-to-talk.md).
+
 config MOBY_F1_LED_TEST
     bool "Enable F1 bench test for the red LED"
     default n

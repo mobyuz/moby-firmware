@@ -72,15 +72,70 @@ idf.py -B build/f2 -p $boardPort flash monitor
 
 Kundalik F0/F1 image’ini yuklash uchun odatiy `idf.py -p $boardPort flash monitor` buyrug‘idan foydalaning. F2 sozlamasi `build/f2`da alohida qoladi.
 
+## F3: USB aloqa, seans va juftlash
+
+F3 odatiy image’ga moby-protocol’ning USB v1 aloqasini qo‘shadi. Protokol **USB-Serial-JTAG** portida (plata USB-C porti) yuradi. Jurnal va konsol UART0’da qoladi, USB port faqat kadrlar uchun. Yuz F3’siz ham ishlaydi: aloqa bo‘lmasa ko‘zlar kiprik qoqadi, apparat mute doim birinchi. Qaror va chegaralar: [ADR 0001](docs/adr/0001-f3-usb-link.md).
+
+- `components/moby_protocol/` moby-protocol’ning `0ddc9a9` commitidan (`claude/mutual-auth`) **vaqtinchalik** ko‘chirma. Reliz tegi chiqqach, uni reliz artefakti almashtiradi. Kelib chiqishi va nazorat summalari `PROVENANCE.md`da.
+- Ulanishda darhol `hello`, `hello_ack` kelguncha har soniya qayta yuboriladi, 3 soniyada yangi nonce bilan qayta boshlanadi. Seansdan keyin har 2 soniyada `heartbeat`. Desktop tomondan 3 ta heartbeat javobsiz qolsa seans tugaydi, buferlar tozalanadi, yuz uzilishni ko‘rsatadi. Protokolda desktop heartbeat’i yo‘q, shuning uchun desktop kamida har 2 soniyada biror buyruq (masalan bo‘sh `set_config`) yuborishi kerak.
+- Buyruqlar: `expression`, `display_text`, `cancel`, `set_config`, `pair_begin`, `pair_set_key`. `servo_pose` va `audio_play_*` uchun `E_UNSUPPORTED`. Desktop audio kadrlari rad etiladi. Bu bosqichda mikrofon ishga tushmaydi, audio yo‘li yo‘q, odatiy image hech qanday imkoniyat e’lon qilmaydi.
+- Juftlash: `pair_begin` faqat juftlanmagan robotda qabul qilinadi, juftlangan robot `E_STATE` qaytaradi. Talk tugmasi bosilsa `pair_button_confirmed` ketadi, shundan keyingina `pair_set_key` qabul qilinadi. Talk’ni 10 soniya ushlab turish juftlashni o‘chiradi va `pair_reset` yuboradi. `device_id` birinchi yuklanishda tasodifiy 128 bitdan yaratiladi, `pair_key` NVS’da. Kalit, nonce va dalil jurnalga chiqmaydi.
+- Robotning dalili (2026-11-05): desktop dalili tasdiqlangandan keyin robot `session_proof` hodisasini seansning birinchi hodisasi sifatida, audiodan oldin yuboradi (`HMAC-SHA256(pair_key, "moby-robot-proof-v1" || 0x00 || desktop_nonce || robot_nonce || device_id || 0x00 || session_id)`). Noto‘g‘ri yoki yo‘q desktop dalili uchun robot hech narsa hisoblamaydi va yubormaydi; juftlanmagan robot ham. `pair_set_key` ochgan seansda `desktop_nonce` yo‘q, shuning uchun u seansda dalil yo‘q va desktop qayta ulanadi. Sabablar: [ADR 0003](docs/adr/0003-robot-proof.md). Platada sinalmagan.
+
+F3 host testlari (MSVC yoki `cc`, cJSON va mbedTLS ESP-IDF daraxtidan olinadi):
+
+```powershell
+.\tests\run_f3.ps1
+```
+
+Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 116 boshqaruv qatori, COBS, HMAC, sessiya va robot dalili) va 47 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build default` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
+
+**Hali platani talab qiladigan narsalar (tekshirilmagan):**
+
+- USB-Serial-JTAG: port ochilgach `hello` yetib borishi, port yopilganda holat, hostning DTR/RTS bilan chipni qayta yuklashi, qayta yuklashda ROM matni. TinyUSB CDC bilan taqqoslash va 14-ochiq qaror.
+- Donanim tasodifiy sonlari (SAR ADC entropiyasi), NVS’da `device_id` va `pair_key`ning qayta yuklashdan keyin saqlanishi, mbedTLS HMAC’ning apparat tezlatgichli yo‘li.
+- OLED’da `display_text` ko‘rinishi va aloqa yurib turganda 10 ms tugma so‘rovi vaqti.
+- Haqiqiy desktop bilan seans, 10 soniyalik bosish va juftlash oqimi. `pair_key` NVS’da shifrlanmagan.
+
+## F4: tugma bilan audio oqimi
+
+F4 talk tugmasi bosilganda INMP441 ovozini desktopga oqim qilib yuboradi. U **alohida image** sifatida yig‘iladi va odatiy image’da hech qanday mikrofon kodi yo‘q (sabab, muqobillar va dalillar: [ADR 0002](docs/adr/0002-f4-push-to-talk.md)). Simlar F2 bilan bir xil: BCLK GPIO4, WS GPIO5, SD GPIO6 (mute kaliti orqali), qizil LED GPIO21.
+
+```powershell
+idf.py -B build/f4 -D SDKCONFIG=build/f4/sdkconfig -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.f4' build size
+sh tests/check_image.sh build/f4 ptt
+idf.py -B build/f4 -p $boardPort flash monitor
+```
+
+- Oqim faqat quyidagilarning **hammasi** bajarilganda boshlanadi: talk tugmasi yangi bosildi, apparat mute ochiq, seans o‘rnatilgan va **autentifikatsiya qilingan** (juftlangan robot to‘g‘ri dalil bergan), robot bo‘sh (idle) holatda, `usb_pcm` imkoniyati va PSRAM halqasi bor. Juftlanmagan robot, juftlash jarayoni, yuklanish, aloqa uzilishi va mute holatida mikrofon ishlamaydi. Wake word va doimiy tinglash yo‘q.
+- Format: `audio_start` (`reason=button`, `pcm_s16le`, 16 kHz, mono, 20 ms), keyin 640 baytli robot audio kadrlari (kind 2, `stream_id` 1 dan, ketma-ketlik 0 dan, bo‘shliqsiz), keyin `audio_end` (`frames`, `duration_ms`).
+- To‘xtash: tugma qo‘yib yuborilsa (yig‘ilgan butun kadrlar yuboriladi, so‘ng `audio_end`), `max_utterance_ms` (odatda 15 s), desktop `cancel`, apparat mute (bufer tashlanadi va nollanadi, `audio_end` sababi `mute`), 10 soniyalik bosish. Aloqa uzilsa yoki desktop jim qolsa yozish to‘xtaydi, bufer tozalanadi, hech kimga xabar yuborilmaydi. Bufer to‘lib ketsa (USB orqada) oqim `E_AUDIO_OVERRUN` bilan tugaydi, yuz va tugmalar bloklanmaydi.
+- Qizil LED va “listening” yuzi bitta holatdan (`stream.phase`) olinadi: LED mikrofon ishlaganda doim yonadi. Desktop `listening` yuzini buyura olmaydi.
+- Konvertatsiya shartnomasi (wake word o‘qitishi aynan shuni ishlatishi shart): `pcm16 = (int32)slot >> 16`, chap slot, birlik kuchaytirish (Q8 = 256), qirqish bilan, DC olib tashlanmaydi, filtr yo‘q. Boshlang‘ich 260 ms (13 blok) mikrofon ishga tushishi uchun tashlanadi.
+- Matn: `display_text` UTF-8 dan o‘qiladi. Rus va o‘zbek kirillitsasi, `oʻ gʻ` uchun ʻ belgisi (U+02BB, U+02BC, ‘ ’) 5×7 shriftda ko‘rsatiladi. Noto‘g‘ri bayt ketma-ketligi va shriftda yo‘q harf bitta `?`. Yozuvlar bir-biriga o‘girilmaydi.
+
+Host testlari (MSVC `/W4 /WX`; Linux’da `sh tests/run_f4.sh`):
+
+```powershell
+.\tests\run_f4.ps1
+sh tests/check_sources.sh
+```
+
+**Platani talab qiladigan narsalar (tekshirilmagan):** haqiqiy I²S darajalari va 24→16 bit natijasi, mikrofonning 260 ms ishga tushishi, DMA 16 kHz va 32 bitli slotlarda, PSRAM yozish/o‘qish vaqti, USB-Serial-JTAG o‘tkazuvchanligi (taxminan 32 KB/s audio va boshqaruv trafigi, haqiqiy desktop o‘qiganda), 1,28 s halqa yetarliligi, qizil LED, mute kalitining vaqti, har bosishda I²S kanalini yaratish/o‘chirish kechikishi, OLED’da kirillitsa o‘qilishi va audio sifati. Kechikish va o‘tkazuvchanlik o‘lchanmagan.
+
 ## CI
 
-GitHub Actions F1 va F2 C11 host testlarini ishga tushiradi. Odatiy firmware va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
+GitHub Actions F1, F2, F3 va F4 C11 host testlarini ishga tushiradi (F3 va F4 testlari `espressif/idf:v5.5.6` image’ida). Odatiy firmware, F4 va F2 stend buildi Espressif’ning `espressif/idf:v5.5.6` Docker image’ida yig‘iladi. [Espressif IDF Docker image’lari](https://hub.docker.com/r/espressif/idf/tags)
 
 ## Mahalliy tekshiruv
 
 2026-yil 3-noyabrda F0 va F1 Windows’da ESP-IDF v5.5.6 bilan yig‘ildi. F0 ilova binari 170 208 bayt, F1 ilova binari 207 744 bayt bo‘ldi. `esptool image_info` F1 binarining ESP32-S3 targeti va yaxlitligini tasdiqladi. Beshta F1 host testi va `actionlint` tekshiruvi o‘tdi. F0 xotira o‘lchovi, F1 OLED, tugma, apparat mute va LED sinovi real platada kutilmoqda.
 
 F2 uchun odatiy build va 235 520 baytli stend buildi ESP-IDF v5.5.6 bilan o‘tdi. `esptool` ikkala image yaxlitligini tasdiqladi. Mikrofon qabuli faqat stend image’iga kiritilgan. To‘rtta F2 va beshta F1 host testi hamda `actionlint` o‘tdi. INMP441 signali va apparat mute real platada tekshiriladi.
+
+F3 uchun 2026-yil 4-noyabrda ESP-IDF v5.5.6 bilan odatiy image yig‘ildi: ilova binari 293 376 bayt (umumiy 293 253). F2 stend image’i 237 392 bayt. F3 testlari MSVC (`/W4 /WX`) va Debian gcc 12 (`-Wall -Wextra -Werror -pedantic`) bilan o‘tdi, F1 va F2 testlari ham o‘tdi. USB aloqasi, juftlash va NVS real platada hali tekshirilmagan.
+
+F4 uchun 2026-yil 5-noyabrda ESP-IDF v5.5.6 bilan uch image yig‘ildi (ogohlantirishsiz): odatiy image 296 449 bayt, F4 (tugma bilan audio) 317 789 bayt, F2 stend 237 829 bayt (`idf.py size` “Total image size”; `.bin` fayllari 296 560, 317 904 va 237 952 bayt). `check_image.sh` uchala image’ni, `check_sources.sh` va `check_vendored.sh` o‘tdi. MSVC (`/W4 /WX`) bilan o‘tdi: 8 matn, 37 F4, 43 F3, vektorlar, 5 F1 va 4 F2 testi. Linux gcc (`-Wall -Wextra -Werror -pedantic`) va `actionlint` bu mashinada ishga tushirilmadi (Docker o‘chiq, `actionlint` o‘rnatilmagan); ular CI’da ishlaydi. Platada hech narsa sinalmadi va yuklanmadi.
 
 ## Litsenziya
 
