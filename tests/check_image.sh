@@ -23,7 +23,7 @@ grep -Eq 'CONFIG_ESP_CONSOLE_(USB_SERIAL_JTAG|SECONDARY_USB_SERIAL_JTAG) 1' "$cf
 
 case "$mode" in
 default)
-    has 'moby_audio|moby_pcm|moby_capture|moby_ring|i2s_(new|channel)|i2s_std' && note "the default image contains audio, capture or I2S code"
+    has 'moby_audio|moby_pcm_(sample|convert|from_i2s|measure|rms)|moby_capture|moby_ring|i2s_(new|channel)|i2s_std' && note "the default image contains audio, capture or I2S code"
     has ' T moby_link_step' || note "the link is missing"
     on CONFIG_MOBY_F2_MIC_TEST && note "the microphone bench is on"
     on CONFIG_MOBY_F4_PTT_AUDIO && note "push to talk is on in the default image"
@@ -33,7 +33,7 @@ ptt)
     has ' T moby_capture_init' || note "the capture path is missing"
     has 'i2s_new_channel' || note "I2S is missing"
     has 'moby_audio_task' && note "the F2 bench code is in the push-to-talk image"
-    has 'wake|vad_' && note "a wake word or VAD symbol is in the push-to-talk image"
+    has 'moby_[a-z_]*(wake|vad)|wakenet|esp_sr' && note "a wake word or VAD symbol is in the push-to-talk image"
     on CONFIG_MOBY_F2_MIC_TEST && note "the microphone bench is on"
     on CONFIG_MOBY_F4_PTT_AUDIO || note "push to talk is off"
     ;;
