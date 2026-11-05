@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "moby_pcm.h"
 
 // The deepest message is hello_ack, whose config object sits in data. cJSON
 // recurses once per level, so a hostile payload must not choose the depth.
@@ -485,6 +486,8 @@ static void put_hello(writer_t *writer, const moby_identity_t *identity, const m
 size_t moby_json_build(const moby_identity_t *identity, const moby_out_t *out, char *buffer, size_t capacity)
 {
     static const char *const actions[] = { "press", "release", "long_press" };
+    static const char *const start_reasons[] = { "wake", "button" };
+    static const char *const end_reasons[] = { "vad_silence", "max_duration", "button_release", "mute", "cancel", "error" };
     writer_t writer = { buffer, capacity, 0, capacity == 0 };
     const bool response = out->kind == MOBY_OUT_COMMAND_OK || out->kind == MOBY_OUT_COMMAND_ERROR;
     const char *name = "";
@@ -516,6 +519,12 @@ size_t moby_json_build(const moby_identity_t *identity, const moby_out_t *out, c
     case MOBY_OUT_COMMAND_ERROR:
         name = MOBY_USB_MSG_COMMAND_ERROR;
         break;
+    case MOBY_OUT_AUDIO_START:
+        name = MOBY_USB_MSG_AUDIO_START;
+        break;
+    case MOBY_OUT_AUDIO_END:
+        name = MOBY_USB_MSG_AUDIO_END;
+        break;
     }
     if (!moby_stable_id_valid(out->id) || ((out->kind == MOBY_OUT_ERROR || out->kind == MOBY_OUT_COMMAND_ERROR) &&
                                            (!json_safe(out->u.error.code) || !json_safe(out->u.error.detail)))) {
@@ -542,6 +551,18 @@ size_t moby_json_build(const moby_identity_t *identity, const moby_out_t *out, c
     case MOBY_OUT_ERROR:
     case MOBY_OUT_COMMAND_ERROR:
         put(&writer, "{\"code\":\"%s\",\"detail\":\"%s\"}", out->u.error.code, out->u.error.detail);
+        break;
+    case MOBY_OUT_AUDIO_START:
+        put(&writer,
+            "{\"stream_id\":%u,\"reason\":\"%s\",\"codec\":\"pcm_s16le\",\"sample_rate\":%u,\"channels\":1,"
+            "\"frame_ms\":%u,\"preroll_ms\":%" PRIu32 "}",
+            (unsigned)out->u.audio_start.stream_id, start_reasons[out->u.audio_start.reason & 1U],
+            (unsigned)MOBY_PCM_SAMPLE_RATE, (unsigned)MOBY_PCM_FRAME_MS, out->u.audio_start.preroll_ms);
+        break;
+    case MOBY_OUT_AUDIO_END:
+        put(&writer, "{\"stream_id\":%u,\"reason\":\"%s\",\"frames\":%" PRIu32 ",\"duration_ms\":%" PRIu32 "}",
+            (unsigned)out->u.audio_end.stream_id, end_reasons[(unsigned)out->u.audio_end.reason % 6U],
+            out->u.audio_end.frames, out->u.audio_end.duration_ms);
         break;
     case MOBY_OUT_PAIR_BUTTON_CONFIRMED:
     case MOBY_OUT_PAIR_RESET:

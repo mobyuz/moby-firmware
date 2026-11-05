@@ -107,7 +107,25 @@ typedef enum {
     MOBY_OUT_PAIR_RESET,
     MOBY_OUT_COMMAND_OK,
     MOBY_OUT_COMMAND_ERROR,
+    MOBY_OUT_AUDIO_START,
+    MOBY_OUT_AUDIO_END,
 } moby_out_kind_t;
+
+// The protocol's words for audio_start.reason and audio_end.reason, so a message can be built byte for byte like
+// the shared vectors. This firmware starts a stream for a button press only and ends it for the reasons it has.
+typedef enum {
+    MOBY_AUDIO_START_WAKE,
+    MOBY_AUDIO_START_BUTTON,
+} moby_audio_start_reason_t;
+
+typedef enum {
+    MOBY_AUDIO_END_VAD_SILENCE,
+    MOBY_AUDIO_END_MAX_DURATION,
+    MOBY_AUDIO_END_BUTTON_RELEASE,
+    MOBY_AUDIO_END_MUTE,
+    MOBY_AUDIO_END_CANCEL,
+    MOBY_AUDIO_END_ERROR,
+} moby_audio_end_reason_t;
 
 typedef enum {
     MOBY_BUTTON_PRESS,
@@ -138,6 +156,18 @@ typedef struct {
             bool muted;
             bool boot;
         } mute;
+        // The stream is always pcm_s16le, 16000 Hz, mono, 20 ms frames (see moby_pcm.h).
+        struct {
+            uint16_t stream_id;
+            moby_audio_start_reason_t reason;
+            uint32_t preroll_ms;
+        } audio_start;
+        struct {
+            uint16_t stream_id;
+            moby_audio_end_reason_t reason;
+            uint32_t frames;
+            uint32_t duration_ms;
+        } audio_end;
         // code and detail point at string literals; detail never carries a key or proof.
         struct {
             const char *code;

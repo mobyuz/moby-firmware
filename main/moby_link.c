@@ -96,7 +96,19 @@ static void receive(moby_link_t *link, uint32_t now_ms)
     }
 }
 
-static void transmit(moby_link_t *link)
+static void wipe_bytes(volatile uint8_t *bytes, size_t length)
+{
+    while (length-- != 0) {
+        *bytes++ = 0;
+    }
+}
+
+void moby_link_set_source(moby_link_t *link, const moby_pcm_source_t *source)
+{
+    link->source = source;
+}
+
+static void transmit(moby_link_t *link, uint32_t now_ms)
 {
     moby_out_t out;
     while (moby_session_pop(link->session, &out)) {
@@ -115,14 +127,83 @@ static void transmit(moby_link_t *link)
             continue;
         }
         // A hello or heartbeat is worth nothing late, so none queues behind an undelivered one.
-        const bool disposable = out.kind == MOBY_OUT_HELLO || out.kind == MOBY_OUT_HEARTBEAT;
+        // While audio flows the transmitter is never idle, so the heartbeat is not held back for it.
+        moby_stream_info_t stream;
+        moby_session_stream_info(link->session, &stream);
+        const bool disposable = out.kind == MOBY_OUT_HELLO || (out.kind == MOBY_OUT_HEARTBEAT && !stream.open);
         const moby_transport_t *transport = link->transport;
         if ((disposable && transport->tx_idle && !transport->tx_idle(transport->ctx)) ||
             !transport->write(transport->ctx, link->wire, wire_length)) {
             ++link->stats.frames_dropped;
+            if (out.kind == MOBY_OUT_AUDIO_START) {
+                // The desktop must never get frames of a stream it was not told about.
+                moby_session_stream_start_lost(link->session, now_ms);
+            }
             continue;
         }
         ++link->stats.frames_sent;
+        if (out.kind == MOBY_OUT_AUDIO_START) {
+            link->start_written = true;
+            link->start_written_id = out.u.audio_start.stream_id;
+        }
+    }
+}
+
+// Sends whole frames of the open stream, a few per pass. Samples stay in the source until the frame is written, so
+// a full transport only delays them. Nothing is built unless the session has a stream open.
+static void transmit_audio(moby_link_t *link, uint32_t now_ms)
+{
+    const moby_pcm_source_t *source = link->source;
+    moby_stream_info_t stream;
+    moby_session_stream_info(link->session, &stream);
+    if (!stream.open) {
+        link->start_written = false;
+        return;
+    }
+    if (!source) {
+        return;
+    }
+    const uint32_t events = source->take_events(source->ctx);
+    if (events != 0) {
+        moby_session_stream_events(link->session, now_ms, events);
+        moby_session_stream_info(link->session, &stream);
+        if (!stream.open) {
+            return;
+        }
+    }
+    if (!link->start_written || link->start_written_id != stream.stream_id) {
+        return;
+    }
+    int16_t samples[MOBY_PCM_FRAME_SAMPLES];
+    bool built = false;
+    for (unsigned sent = 0; sent < MOBY_LINK_AUDIO_FRAMES_PER_PASS; ++sent) {
+        if (source->peek(source->ctx, samples, MOBY_PCM_FRAME_SAMPLES) == 0) {
+            if (stream.draining) {
+                // Whatever is left is less than a frame and is dropped with the buffer.
+                moby_session_stream_drained(link->session, now_ms);
+            }
+            break;
+        }
+        built = true;
+        moby_pcm_to_le_bytes(samples, MOBY_PCM_FRAME_SAMPLES, link->payload);
+        size_t wire_length = 0;
+        if (moby_frame_build(MOBY_USB_ROBOT_AUDIO, stream.stream_id, stream.sequence, link->payload,
+                             MOBY_PCM_FRAME_BYTES, link->wire, sizeof link->wire, &wire_length) != MOBY_OK ||
+            !link->transport->write(link->transport->ctx, link->wire, wire_length)) {
+            ++link->stats.audio_stalls;
+            break;
+        }
+        source->consume(source->ctx, MOBY_PCM_FRAME_SAMPLES);
+        moby_session_stream_frame_sent(link->session);
+        ++link->stats.frames_sent;
+        ++link->stats.audio_frames_sent;
+        ++stream.sequence;
+    }
+    // No audio is left in the local buffers once the pass is over.
+    wipe_bytes((volatile uint8_t *)samples, sizeof samples);
+    if (built) {
+        wipe_bytes(link->payload, sizeof link->payload);
+        wipe_bytes(link->wire, sizeof link->wire);
     }
 }
 
@@ -132,6 +213,7 @@ void moby_link_step(moby_link_t *link, uint32_t now_ms)
     if (connected != link->was_connected) {
         link->was_connected = connected;
         link->needs_sync = connected;
+        link->start_written = false;
         moby_decoder_reset(&link->decoder);
         moby_session_set_link(link->session, now_ms, connected);
     }
@@ -140,6 +222,7 @@ void moby_link_step(moby_link_t *link, uint32_t now_ms)
     }
     moby_session_tick(link->session, now_ms);
     if (connected) {
-        transmit(link);
+        transmit(link, now_ms);
+        transmit_audio(link, now_ms);
     }
 }

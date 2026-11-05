@@ -9,11 +9,19 @@
 
 #include "moby_face.h"
 #include "moby_msg.h"
+#include "moby_pcm.h"
 
 // The session between the robot and the desktop. It is plain C with no
 // ESP-IDF header, no clock and no I/O: callers pass the time in milliseconds
 // (it may wrap), feed it parsed messages and control readings, and pull what to
-// send. The hardware mute always wins, and nothing here records audio.
+// send. The hardware mute always wins.
+//
+// Push to talk. The session alone decides when the microphone may run. A stream
+// is open only between a talk press that was accepted (see can_start in the .c
+// file) and its end. The one fact "capturing" lives in stream.phase and nowhere
+// else: the platform's capture switch, the red LED and the listening face are
+// all derived from it, through ops.capture_set and moby_session_recording, so
+// they cannot disagree.
 
 enum {
     MOBY_HELLO_RETRY_MS = 1000,
@@ -26,6 +34,9 @@ enum {
     // Unsolicited protocol errors are limited to one per this many milliseconds.
     MOBY_ERROR_GAP_MS = 500,
     MOBY_OUTBOX_LEN = 8,
+    // After a button release or the time limit, the audio already captured is still sent. If the link does not
+    // take it within this time, the stream ends with an error and the rest is discarded.
+    MOBY_DRAIN_MS = 1000,
 };
 
 typedef enum {
@@ -48,13 +59,42 @@ typedef struct {
     bool (*store_key)(void *ctx, const uint8_t key[MOBY_USB_PAIR_KEY_BYTES]);
     bool (*erase_key)(void *ctx);
     void (*log)(void *ctx, const char *line);
+    // Switches capture on or off: the microphone clocks, the red LED and the sample gate. Called only when the
+    // state changes, and with `false` before anything else on every stop. Without it (and without the usb_pcm
+    // capability) the session never opens a stream. It must not block.
+    void (*capture_set)(void *ctx, bool on);
+    // Throws away and zeroes every buffered sample. Called when a stream ends without being sent in full, and
+    // whenever the session ends.
+    void (*capture_discard)(void *ctx);
 } moby_session_ops_t;
 
 typedef struct {
     uint32_t rx_sequence_gaps;
     uint32_t outbox_dropped;
     uint32_t errors_suppressed;
+    uint32_t streams_started;
+    uint32_t stream_frames_sent;
+    uint32_t stream_overruns;
+    uint32_t stream_faults;
+    uint32_t stream_start_lost;
 } moby_session_stats_t;
+
+typedef enum {
+    MOBY_STREAM_NONE,
+    // The button is held: capture is on and the red LED is lit.
+    MOBY_STREAM_CAPTURING,
+    // Capture is off; the samples already buffered are being sent before audio_end.
+    MOBY_STREAM_DRAINING,
+} moby_stream_phase_t;
+
+// What the link needs to know to send audio frames.
+typedef struct {
+    bool open;
+    bool draining;
+    uint16_t stream_id;
+    // The sequence number of the next frame of this stream; frames start at 0 and have no gaps.
+    uint32_t sequence;
+} moby_stream_info_t;
 
 typedef struct {
     moby_session_ops_t ops;
@@ -111,6 +151,21 @@ typedef struct {
     bool error_sent;
     uint32_t error_sent_ms;
 
+    // Push to talk.
+    struct {
+        moby_stream_phase_t phase;
+        uint16_t id;
+        uint16_t last_id;
+        uint32_t frames;
+        uint32_t started_ms;
+        uint32_t drain_since_ms;
+        // The audio_end that is owed to the desktop, until it fits into the outbox.
+        bool end_owed;
+        moby_audio_end_reason_t end_reason;
+        uint16_t end_id;
+        uint32_t end_frames;
+    } stream;
+
     moby_out_t outbox[MOBY_OUTBOX_LEN];
     unsigned outbox_head;
     unsigned outbox_count;
@@ -150,7 +205,24 @@ bool moby_session_pop(moby_session_t *session, moby_out_t *out);
 // robot shows disconnected, and display text shows only while connected and unmuted.
 void moby_session_view(const moby_session_t *session, moby_face_view_t *view);
 
-// Always false: this stage has no audio path, so no code sets it.
+// True exactly while capture is on (stream.phase is capturing). The red LED, the microphone and the listening face
+// follow this value and nothing else.
 bool moby_session_recording(const moby_session_t *session);
+
+// For the link: whether audio frames may flow, with the stream id and the next sequence number.
+void moby_session_stream_info(const moby_session_t *session, moby_stream_info_t *info);
+
+// A frame of the open stream was written to the transport.
+void moby_session_stream_frame_sent(moby_session_t *session);
+
+// The link has sent every whole frame of a draining stream: the stream ends with its audio_end.
+void moby_session_stream_drained(moby_session_t *session, uint32_t now_ms);
+
+// MOBY_PCM_EVENT_* bits from the sample source: an overrun or a hardware fault ends the stream with an error.
+void moby_session_stream_events(moby_session_t *session, uint32_t now_ms, uint32_t events);
+
+// The audio_start of the open stream could not be written, so the desktop must never see its frames: the stream
+// is dropped and nothing more is sent for it.
+void moby_session_stream_start_lost(moby_session_t *session, uint32_t now_ms);
 
 #endif

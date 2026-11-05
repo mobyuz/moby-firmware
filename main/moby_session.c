@@ -59,6 +59,10 @@ static moby_expression effective(const moby_session_t *session)
     if (!session->established) {
         return MOBY_EXPRESSION_DISCONNECTED;
     }
+    // Listening is not a face the desktop can pick: it is shown exactly while capture is on.
+    if (session->stream.phase == MOBY_STREAM_CAPTURING) {
+        return MOBY_EXPRESSION_LISTENING;
+    }
     return session->error_active ? MOBY_EXPRESSION_ERROR : session->face;
 }
 
@@ -116,6 +120,146 @@ static void respond(moby_session_t *session, uint32_t now_ms, const char *id, co
     }
 }
 
+// --- Push to talk -----------------------------------------------------------------------------
+
+typedef enum {
+    // Capture is off now; the buffered audio is sent, then audio_end.
+    STOP_DRAIN,
+    // Capture is off and the buffer is thrown away; audio_end follows at once.
+    STOP_DISCARD,
+    // Capture is off and the buffer is thrown away; nobody is told (the link is gone or the start never arrived).
+    STOP_SILENT,
+} stop_mode_t;
+
+static bool capture_available(const moby_session_t *session)
+{
+    return (session->identity.capabilities & MOBY_CAP_USB_PCM) != 0 && session->ops.capture_set != NULL &&
+           session->ops.capture_discard != NULL;
+}
+
+// The only place that changes the phase. It calls capture_set exactly when the capturing state changes, so the
+// microphone, the LED and the sample gate move together with the face.
+static void enter_phase(moby_session_t *session, moby_stream_phase_t phase)
+{
+    const bool was = session->stream.phase == MOBY_STREAM_CAPTURING;
+    const bool now = phase == MOBY_STREAM_CAPTURING;
+    session->stream.phase = phase;
+    if (was != now && session->ops.capture_set) {
+        session->ops.capture_set(session->ops.ctx, now);
+    }
+}
+
+static void flush_end(moby_session_t *session, uint32_t now_ms)
+{
+    if (!session->stream.end_owed) {
+        return;
+    }
+    moby_out_t *out = push_event(session, now_ms, MOBY_OUT_AUDIO_END);
+    if (out) {
+        out->u.audio_end.stream_id = session->stream.end_id;
+        out->u.audio_end.reason = session->stream.end_reason;
+        out->u.audio_end.frames = session->stream.end_frames;
+        out->u.audio_end.duration_ms = session->stream.end_frames * (uint32_t)MOBY_PCM_FRAME_MS;
+        session->stream.end_owed = false;
+    }
+}
+
+static void finish_stream(moby_session_t *session, uint32_t now_ms, moby_audio_end_reason_t reason, bool announce)
+{
+    enter_phase(session, MOBY_STREAM_NONE);
+    if (session->ops.capture_discard) {
+        session->ops.capture_discard(session->ops.ctx);
+    }
+    if (session->state == MOBY_SESSION_LISTENING) {
+        set_state(session, MOBY_SESSION_IDLE);
+    }
+    if (announce && session->link_up) {
+        session->stream.end_owed = true;
+        session->stream.end_reason = reason;
+        session->stream.end_id = session->stream.id;
+        session->stream.end_frames = session->stream.frames;
+        flush_end(session, now_ms);
+    }
+}
+
+static void stream_stop(moby_session_t *session, uint32_t now_ms, moby_audio_end_reason_t reason, stop_mode_t mode)
+{
+    if (session->stream.phase == MOBY_STREAM_NONE) {
+        return;
+    }
+    if (mode == STOP_DRAIN) {
+        if (session->stream.phase != MOBY_STREAM_CAPTURING) {
+            return;
+        }
+        // Capture stops now: the gate closes, the LED goes dark and the face leaves listening. Only the audio that was
+        // captured while the button was held is still sent.
+        enter_phase(session, MOBY_STREAM_DRAINING);
+        session->stream.drain_since_ms = now_ms;
+        session->stream.end_reason = reason;
+        if (session->state == MOBY_SESSION_LISTENING) {
+            set_state(session, MOBY_SESSION_IDLE);
+        }
+        session->face = MOBY_EXPRESSION_IDLE;
+        note(session, "capture off");
+        return;
+    }
+    if (session->stream.phase == MOBY_STREAM_CAPTURING) {
+        session->face = MOBY_EXPRESSION_IDLE;
+    }
+    finish_stream(session, now_ms, reason, mode == STOP_DISCARD);
+    note(session, "capture off");
+}
+
+// A failure that ends the stream: the desktop gets audio_end with reason error, an error event, and the face blinks
+// the error face for a moment.
+static void stream_fail(moby_session_t *session, uint32_t now_ms, const char *code, const char *detail)
+{
+    if (session->stream.phase == MOBY_STREAM_NONE) {
+        return;
+    }
+    stream_stop(session, now_ms, MOBY_AUDIO_END_ERROR, STOP_DISCARD);
+    raise_error(session, now_ms, code, detail);
+}
+
+// Every condition for opening the microphone, in one place. Anything else leaves it off.
+static bool can_start(const moby_session_t *session)
+{
+    return capture_available(session) && session->link_up && session->established && session->authenticated &&
+           !session->muted && session->talk_down && session->state == MOBY_SESSION_IDLE &&
+           session->stream.phase == MOBY_STREAM_NONE && !session->stream.end_owed &&
+           moby_can_transition(effective(session), MOBY_EXPRESSION_LISTENING);
+}
+
+static void stream_start(moby_session_t *session, uint32_t now_ms)
+{
+    if (!can_start(session)) {
+        return;
+    }
+    // The desktop must be told before any audio exists. If the outbox cannot take audio_start, nothing starts.
+    moby_out_t *out = push_event(session, now_ms, MOBY_OUT_AUDIO_START);
+    if (!out) {
+        return;
+    }
+    uint16_t id = (uint16_t)(session->stream.last_id + 1U);
+    if (id < MOBY_USB_AUDIO_STREAM_ID_MIN) {
+        id = MOBY_USB_AUDIO_STREAM_ID_MIN;
+    }
+    session->stream.last_id = id;
+    session->stream.id = id;
+    session->stream.frames = 0;
+    session->stream.started_ms = now_ms;
+    out->u.audio_start.stream_id = id;
+    out->u.audio_start.reason = MOBY_AUDIO_START_BUTTON;
+    out->u.audio_start.preroll_ms = 0;
+    session->error_active = false;
+    session->expression_timed = false;
+    session->face = MOBY_EXPRESSION_IDLE;
+    set_state(session, MOBY_SESSION_LISTENING);
+    ++session->stats.streams_started;
+    enter_phase(session, MOBY_STREAM_CAPTURING);
+    note(session, "capture on");
+}
+
 static void clear_pairing(moby_session_t *session)
 {
     session->pair_confirmed = false;
@@ -155,6 +299,12 @@ static void start_attempt(moby_session_t *session, uint32_t now_ms)
 
 static void end_session(moby_session_t *session, uint32_t now_ms, const char *reason)
 {
+    // Nobody is told: the link is gone or the desktop stopped answering. Capture stops first, the buffer is wiped.
+    stream_stop(session, now_ms, MOBY_AUDIO_END_ERROR, STOP_SILENT);
+    session->stream.end_owed = false;
+    if (session->ops.capture_discard) {
+        session->ops.capture_discard(session->ops.ctx);
+    }
     session->established = false;
     session->authenticated = false;
     session->session_id[0] = '\0';
@@ -218,6 +368,11 @@ void moby_session_set_link(moby_session_t *session, uint32_t now_ms, bool up)
 static void apply_mute(moby_session_t *session, uint32_t now_ms, bool muted)
 {
     const bool was_pairing = session->state == MOBY_SESSION_PAIRING;
+    if (muted) {
+        // First of all: the microphone goes off and the buffered audio is thrown away, before any message is queued.
+        session->muted = true;
+        stream_stop(session, now_ms, MOBY_AUDIO_END_MUTE, STOP_DISCARD);
+    }
     session->muted = muted;
     session->pair_confirmed = false;
     session->expression_timed = false;
@@ -273,10 +428,12 @@ static void on_press(moby_session_t *session, uint32_t now_ms)
         out->u.button.action = MOBY_BUTTON_PRESS;
         session->press_announced = true;
     }
+    stream_start(session, now_ms);
 }
 
 static void on_release(moby_session_t *session, uint32_t now_ms)
 {
+    stream_stop(session, now_ms, MOBY_AUDIO_END_BUTTON_RELEASE, STOP_DRAIN);
     if (session->press_announced) {
         session->press_announced = false;
         moby_out_t *out = push_event(session, now_ms, MOBY_OUT_BUTTON_EVENT);
@@ -305,6 +462,8 @@ void moby_session_controls(moby_session_t *session, uint32_t now_ms, bool muted,
     session->attention = attention;
     if (talk_down && !session->long_fired && due(now_ms, session->talk_since_ms + MOBY_LONG_PRESS_MS)) {
         session->long_fired = true;
+        // The pairing is about to be erased, so nothing may keep recording under it.
+        stream_stop(session, now_ms, MOBY_AUDIO_END_CANCEL, STOP_DISCARD);
         if (session->established) {
             moby_out_t *out = push_event(session, now_ms, MOBY_OUT_BUTTON_EVENT);
             if (out) {
@@ -333,6 +492,16 @@ static void tick_timers(moby_session_t *session, uint32_t now_ms)
     if (session->state == MOBY_SESSION_PAIRING && due(now_ms, session->pair_deadline_ms)) {
         clear_pairing(session);
         raise_error(session, now_ms, MOBY_USB_E_TIMEOUT, "pairing window expired");
+    }
+    if (session->stream.phase == MOBY_STREAM_CAPTURING &&
+        due(now_ms, session->stream.started_ms + session->config.max_utterance_ms)) {
+        stream_stop(session, now_ms, MOBY_AUDIO_END_MAX_DURATION, STOP_DRAIN);
+    } else if (session->stream.phase == MOBY_STREAM_DRAINING &&
+               due(now_ms, session->stream.drain_since_ms + MOBY_DRAIN_MS)) {
+        stream_fail(session, now_ms, MOBY_USB_E_AUDIO_OVERRUN, "audio was not collected in time");
+    }
+    if (session->link_up) {
+        flush_end(session, now_ms);
     }
 }
 
@@ -508,7 +677,11 @@ static void on_expression(moby_session_t *session, uint32_t now_ms, const moby_m
         respond(session, now_ms, id, MOBY_USB_E_MUTED, "hardware mute is on");
     } else if (session->state == MOBY_SESSION_PAIRING) {
         respond(session, now_ms, id, MOBY_USB_E_BUSY, "pairing in progress");
-    } else if (target == MOBY_EXPRESSION_MUTED || target == MOBY_EXPRESSION_DISCONNECTED) {
+    } else if (session->stream.phase == MOBY_STREAM_CAPTURING) {
+        respond(session, now_ms, id, MOBY_USB_E_BUSY, "capture in progress");
+    } else if (target == MOBY_EXPRESSION_MUTED || target == MOBY_EXPRESSION_DISCONNECTED ||
+               target == MOBY_EXPRESSION_LISTENING) {
+        // Listening, like mute and disconnected, is a fact about the robot: it is shown while capture is on.
         respond(session, now_ms, id, MOBY_USB_E_STATE, "the robot owns this state");
     } else if (!animation_known(msg->u.expression.animation)) {
         respond(session, now_ms, id, MOBY_USB_E_UNSUPPORTED, "unknown animation");
@@ -608,8 +781,12 @@ static void on_command(moby_session_t *session, uint32_t now_ms, const moby_msg_
         }
         break;
     case MOBY_MSG_CANCEL:
-        // This stage opens no stream, so there is nothing to cancel.
-        respond(session, now_ms, id, MOBY_USB_E_STATE, "no such stream");
+        if (session->stream.phase != MOBY_STREAM_NONE && msg->u.cancel.stream_id == session->stream.id) {
+            stream_stop(session, now_ms, MOBY_AUDIO_END_CANCEL, STOP_DISCARD);
+            respond(session, now_ms, id, NULL, NULL);
+        } else {
+            respond(session, now_ms, id, MOBY_USB_E_STATE, "no such stream");
+        }
         break;
     case MOBY_MSG_SET_CONFIG:
         apply_patch(session, &msg->u.set_config);
@@ -660,6 +837,53 @@ void moby_session_view(const moby_session_t *session, moby_face_view_t *view)
 
 bool moby_session_recording(const moby_session_t *session)
 {
-    (void)session;
-    return false;
+    return session->stream.phase == MOBY_STREAM_CAPTURING;
+}
+
+void moby_session_stream_info(const moby_session_t *session, moby_stream_info_t *info)
+{
+    info->open = session->stream.phase != MOBY_STREAM_NONE;
+    info->draining = session->stream.phase == MOBY_STREAM_DRAINING;
+    info->stream_id = session->stream.id;
+    info->sequence = session->stream.frames;
+}
+
+void moby_session_stream_frame_sent(moby_session_t *session)
+{
+    if (session->stream.phase != MOBY_STREAM_NONE) {
+        ++session->stream.frames;
+        ++session->stats.stream_frames_sent;
+    }
+}
+
+void moby_session_stream_drained(moby_session_t *session, uint32_t now_ms)
+{
+    if (session->stream.phase == MOBY_STREAM_DRAINING) {
+        finish_stream(session, now_ms, session->stream.end_reason, true);
+        note(session, "stream ended");
+    }
+}
+
+void moby_session_stream_events(moby_session_t *session, uint32_t now_ms, uint32_t events)
+{
+    if (session->stream.phase == MOBY_STREAM_NONE) {
+        return;
+    }
+    if (events & MOBY_PCM_EVENT_OVERRUN) {
+        ++session->stats.stream_overruns;
+        stream_fail(session, now_ms, MOBY_USB_E_AUDIO_OVERRUN, "audio ring overrun");
+    } else if (events & MOBY_PCM_EVENT_FAULT) {
+        ++session->stats.stream_faults;
+        stream_fail(session, now_ms, MOBY_USB_E_HW, "microphone failed");
+    }
+}
+
+void moby_session_stream_start_lost(moby_session_t *session, uint32_t now_ms)
+{
+    if (session->stream.phase == MOBY_STREAM_NONE) {
+        return;
+    }
+    ++session->stats.stream_start_lost;
+    stream_stop(session, now_ms, MOBY_AUDIO_END_ERROR, STOP_SILENT);
+    raise_error(session, now_ms, MOBY_USB_E_AUDIO_OVERRUN, "audio could not start");
 }
