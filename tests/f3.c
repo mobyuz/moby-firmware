@@ -849,7 +849,8 @@ static void test_expression_transitions_exhaustive(void)
             snprintf(data, sizeof data, "{\"state\":\"%s\",\"animation\":\"none\",\"duration_ms\":0}", known[to]);
             command(fx, "c-0001", "expression", data);
             step(fx, 0);
-            const bool owned = to == MOBY_EXPRESSION_MUTED || to == MOBY_EXPRESSION_DISCONNECTED;
+            // F4: listening is shown only while capture is on, so the desktop cannot pick it either.
+            const bool owned = to == MOBY_EXPRESSION_MUTED || to == MOBY_EXPRESSION_DISCONNECTED || to == MOBY_EXPRESSION_LISTENING;
             if (owned || !moby_can_transition((moby_expression)from, (moby_expression)to)) {
                 expect_error(fx, "c-0001", "E_STATE");
                 assert(fx->session.face == (moby_expression)from);
@@ -1513,7 +1514,14 @@ static void setup_expression(fx_t *fx, const char *state)
 }
 
 static void setup_idle(fx_t *fx) { establish(fx, false, NULL); }
-static void setup_listening(fx_t *fx) { setup_expression(fx, "listening"); }
+// The desktop cannot command listening any more (F4); the real capture case is in tests/f4.c. This forces the state
+// so that the mute is still proven over it in an image without audio.
+static void setup_listening(fx_t *fx)
+{
+    establish(fx, false, NULL);
+    fx->session.face = MOBY_EXPRESSION_LISTENING;
+    fx->session.state = MOBY_SESSION_LISTENING;
+}
 static void setup_thinking(fx_t *fx) { setup_expression(fx, "thinking"); }
 
 static void setup_speaking(fx_t *fx)

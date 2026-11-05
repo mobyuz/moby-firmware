@@ -51,7 +51,7 @@ static void test_conversion_values(void)
         { 0x7fffff00U, 32767 },  { 0x80000000U, -32768 }, { 0x00000000U, 0 },     { 0xffffff00U, -1 },
         { 0x00010000U, 1 },      { 0x0000ffffU, 0 },      { 0x00007f00U, 0 },     { 0xfffeff00U, -2 },
         { 0xffff0000U, -1 },     { 0xfffe0000U, -2 },     { 0xfffeffffU, -2 },    { 0xffffffffU, -1 },
-        { 0x12345600U, 0x1234 }, { 0xedcba900U, -4659 },  { 0x00ff00ffU, 255 },   { 0x7fff0000U, 32767 },
+        { 0x12345600U, 0x1234 }, { 0xedcba900U, -4661 },  { 0x00ff00ffU, 255 },   { 0x7fff0000U, 32767 },
         { 0x80010000U, -32767 }, { 0x00008000U, 0 },      { 0xffff8000U, -1 },
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
@@ -662,7 +662,8 @@ static void tap(fx_t *fx)
             if (has(slot, "\"name\":\"hello\"")) {
                 fx->in_stream = false;
             } else if (has(slot, "\"name\":\"audio_start\"")) {
-                assert(!fx->in_stream);
+                // Only a control frame that the full transport refused (and the link counted) can leave one open.
+                assert(!fx->in_stream || fx->link.stats.frames_dropped > 0);
                 fx->in_stream = true;
                 fx->stream_id = number_of(slot, "stream_id");
                 fx->next_sequence = 0;
@@ -1120,17 +1121,18 @@ static void test_cancel_from_desktop(void)
     expect_error(fx, "c-0001", "E_STATE");
     assert(fx->mic_on);
     // The right stream: capture stops at once, the unsent audio is thrown away, audio_end says cancel.
+    mic(fx, 2);
     command(fx, "c-0002", "cancel", "{\"stream_id\":1}");
     step(fx, 0);
     assert(!fx->mic_on && !fx->led && moby_ring_available(&fx->ring) == 0);
-    expect_ok(fx, "c-0002");
     char json[JSON_MAX];
-    assert(next_msg(fx, json) && has(json, "\"name\":\"audio_end\"") && has(json, "\"reason\":\"cancel\"") && has(json, "\"frames\":3"));
-    assert(fx->audio_frames == 3 && view_of(fx)->expression == MOBY_FACE_IDLE);
+    assert(next_msg(fx, json) && has(json, "\"name\":\"audio_end\"") && has(json, "\"reason\":\"cancel\"") && has(json, "\"frames\":5"));
+    expect_ok(fx, "c-0002");
+    assert(fx->audio_frames == 5 && view_of(fx)->expression == MOBY_FACE_IDLE);
     // The button is still held, and still nothing restarts. A second cancel is refused.
     mic(fx, 2);
     step(fx, 100);
-    assert(fx->audio_frames == 3 && !fx->mic_on);
+    assert(fx->audio_frames == 5 && !fx->mic_on);
     command(fx, "c-0003", "cancel", "{\"stream_id\":1}");
     step(fx, 0);
     expect_error(fx, "c-0003", "E_STATE");
@@ -1195,6 +1197,7 @@ static void test_mute_order_and_report(void)
     char json[JSON_MAX];
     assert(next_msg(fx, json) && has(json, "\"name\":\"audio_end\"") && has(json, "\"reason\":\"mute\"") && has(json, "\"frames\":3"));
     expect(fx, "mute_changed", "\"muted\":true");
+    expect(fx, "button_event", "\"action\":\"release\"");
     expect_silence(fx);
     assert(fx->audio_frames == 3);
     // Blocks that were already on their way are refused, the link sends nothing, unmuting resumes nothing.
@@ -1345,6 +1348,7 @@ static void test_no_capture_before_session_and_on_boot(void)
     assert(!fx->session.established);
     expect_no_capture(fx);
     // Switch closed after the session: muted again.
+    step(fx, 1000);
     handshake(fx, TEST_KEY);
     mute(fx, true);
     expect_no_capture(fx);
@@ -1517,6 +1521,7 @@ static void test_overrun(void)
     step(fx, 0);
     assert(!fx->mic_on && !fx->led && moby_ring_available(&fx->ring) == 0);
     assert(fx->session.stats.stream_overruns == 1);
+    step(fx, 0);
     char json[JSON_MAX];
     bool saw_end = false;
     bool saw_error = false;
@@ -1542,6 +1547,7 @@ static void test_hardware_fault(void)
     mic(fx, 2);
     drain(fx);
     fx->fault = true;
+    step(fx, 0);
     step(fx, 0);
     assert(!fx->mic_on && fx->session.stats.stream_faults == 1 && moby_ring_available(&fx->ring) == 0);
     char json[JSON_MAX];

@@ -27,7 +27,7 @@ for test in vectors f3; do
         -isystem "$cjson" -isystem "$mbed/include" \
         "$proto/c/moby_usb_codec.c" "$root/main/moby_json.c" "$root/main/moby_session.c" \
         "$root/main/moby_config.c" "$root/main/moby_link.c" "$root/main/moby_hmac.c" \
-        "$root/main/moby_face.c" "$root/main/moby_font.c" "$root/tests/$test.c" \
+        "$root/main/moby_face.c" "$root/main/moby_font.c" "$root/main/moby_pcm.c" "$root/tests/$test.c" \
         "$out/cJSON.o" "$out/md.o" "$out/sha256.o" "$out/platform_util.o" "$out/constant_time.o" \
         -lm -o "$out/$test"
     "$out/$test" "$proto/tests/fixtures"

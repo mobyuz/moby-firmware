@@ -170,6 +170,21 @@ static void check_built(const char *name, const uint8_t *payload, size_t payload
         out.ts_ms = 130;
         out.u.error.code = MOBY_USB_E_AUDIO_OVERRUN;
         out.u.error.detail = "ring buffer overrun";
+    } else if (strcmp(name, "audio_start") == 0) {
+        out.kind = MOBY_OUT_AUDIO_START;
+        strcpy(out.id, "e-0011");
+        out.ts_ms = 110;
+        out.u.audio_start.stream_id = 1;
+        out.u.audio_start.reason = MOBY_AUDIO_START_WAKE;
+        out.u.audio_start.preroll_ms = 300;
+    } else if (strcmp(name, "audio_end") == 0) {
+        out.kind = MOBY_OUT_AUDIO_END;
+        strcpy(out.id, "e-0012");
+        out.ts_ms = 120;
+        out.u.audio_end.stream_id = 1;
+        out.u.audio_end.reason = MOBY_AUDIO_END_VAD_SILENCE;
+        out.u.audio_end.frames = 150;
+        out.u.audio_end.duration_ms = 3000;
     } else if (strcmp(name, "pair_button_confirmed") == 0 || strcmp(name, "pair_reset") == 0) {
         const bool confirmed = strcmp(name, "pair_button_confirmed") == 0;
         out.kind = confirmed ? MOBY_OUT_PAIR_BUTTON_CONFIRMED : MOBY_OUT_PAIR_RESET;

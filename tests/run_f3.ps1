@@ -40,7 +40,8 @@ try {
     $third = @('cJSON.obj', 'md.obj', 'sha256.obj', 'platform_util.obj', 'constant_time.obj')
     $ours = @(
         "$proto\c\moby_usb_codec.c", "$main\moby_json.c", "$main\moby_session.c", "$main\moby_config.c",
-        "$main\moby_link.c", "$main\moby_hmac.c", "$main\moby_face.c", "$main\moby_font.c"
+        "$main\moby_link.c", "$main\moby_hmac.c", "$main\moby_face.c", "$main\moby_font.c",
+        "$main\moby_pcm.c"
     )
     $flags = @('/std:c11', '/W4', '/WX', '/D_CRT_SECURE_NO_WARNINGS', '/I', $main, '/I', "$proto\include", '/I', $cjson, '/I', $host_inc, '/I', "$mbed\include")
     foreach ($test in 'vectors', 'f3') {
