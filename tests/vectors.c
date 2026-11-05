@@ -190,6 +190,12 @@ static void check_built(const char *name, const uint8_t *payload, size_t payload
         out.kind = confirmed ? MOBY_OUT_PAIR_BUTTON_CONFIRMED : MOBY_OUT_PAIR_RESET;
         strcpy(out.id, confirmed ? "e-0014" : "e-0015");
         out.ts_ms = confirmed ? 140 : 150;
+    } else if (strcmp(name, "session_proof") == 0) {
+        out.kind = MOBY_OUT_SESSION_PROOF;
+        strcpy(out.id, "e-0031");
+        out.ts_ms = 310;
+        assert(moby_hex_decode("b3bae9e90d0e2cee7808185e64fd557087fc93f6e5e0e0c866467c2d28b921f4", 64,
+                               out.u.session_proof.proof, MOBY_USB_PROOF_BYTES));
     } else if (strcmp(name, "command_ok") == 0) {
         out.kind = MOBY_OUT_COMMAND_OK;
         strcpy(out.id, "r-0029");
@@ -301,6 +307,62 @@ static void proof_row(char **fields, size_t count)
     assert(!moby_ct_equal(actual, proof, sizeof proof));
 }
 
+// The robot's proof (session_proof): the vendored input builder and the mbedTLS HMAC reproduce every row.
+static void robot_proof_row(char **fields, size_t count)
+{
+    assert(count == 8);
+    uint8_t key[MOBY_USB_PAIR_KEY_BYTES];
+    uint8_t desktop_nonce[MOBY_USB_NONCE_BYTES];
+    uint8_t robot_nonce[MOBY_USB_NONCE_BYTES];
+    uint8_t expected_input[256];
+    uint8_t proof[MOBY_USB_PROOF_BYTES];
+    assert(from_hex(fields[1], key, sizeof key) == sizeof key);
+    assert(from_hex(fields[2], desktop_nonce, sizeof desktop_nonce) == sizeof desktop_nonce);
+    assert(from_hex(fields[3], robot_nonce, sizeof robot_nonce) == sizeof robot_nonce);
+    const size_t expected_length = from_hex(fields[6], expected_input, sizeof expected_input);
+    assert(from_hex(fields[7], proof, sizeof proof) == sizeof proof);
+    uint8_t input[256];
+    size_t input_length = 0;
+    assert(moby_robot_proof_input(desktop_nonce, robot_nonce, fields[4], fields[5], input, sizeof input, &input_length) ==
+           MOBY_OK);
+    assert(input_length == expected_length && memcmp(input, expected_input, expected_length) == 0);
+    uint8_t actual[32];
+    assert(moby_hmac_sha256(key, sizeof key, input, input_length, actual));
+    if (!moby_ct_equal(actual, proof, sizeof proof)) {
+        fprintf(stderr, "%s: robot proof differs from the vector\n", fields[0]);
+        exit(1);
+    }
+    actual[0] ^= 1;
+    assert(!moby_ct_equal(actual, proof, sizeof proof));
+}
+
+// Desktop and robot inputs differ, so their proofs do; both are recomputed here.
+static void reflection_row(char **fields, size_t count)
+{
+    assert(count == 7);
+    uint8_t key[MOBY_USB_PAIR_KEY_BYTES];
+    uint8_t desktop_input[256];
+    uint8_t robot_input[256];
+    uint8_t desktop_proof[MOBY_USB_PROOF_BYTES];
+    uint8_t robot_proof[MOBY_USB_PROOF_BYTES];
+    assert(from_hex(fields[1], key, sizeof key) == sizeof key);
+    const size_t desktop_length = from_hex(fields[2], desktop_input, sizeof desktop_input);
+    assert(from_hex(fields[3], desktop_proof, sizeof desktop_proof) == sizeof desktop_proof);
+    const size_t robot_length = from_hex(fields[4], robot_input, sizeof robot_input);
+    assert(from_hex(fields[5], robot_proof, sizeof robot_proof) == sizeof robot_proof);
+    uint8_t actual[32];
+    assert(moby_hmac_sha256(key, sizeof key, desktop_input, desktop_length, actual));
+    assert(moby_ct_equal(actual, desktop_proof, sizeof actual));
+    assert(moby_hmac_sha256(key, sizeof key, robot_input, robot_length, actual));
+    assert(moby_ct_equal(actual, robot_proof, sizeof actual));
+    assert(!moby_ct_equal(desktop_proof, robot_proof, sizeof actual));
+    size_t first = 0;
+    while (first < desktop_length && first < robot_length && desktop_input[first] == robot_input[first]) {
+        ++first;
+    }
+    assert(first == (size_t)strtoul(fields[6], NULL, 10) && first <= 16);
+}
+
 static size_t transition_index;
 
 static void transition_row(char **fields, size_t count)
@@ -325,10 +387,12 @@ int main(int argc, char **argv)
     const size_t cobs = for_each_row(argv[1], "cobs-vectors.tsv", cobs_row);
     const size_t hmacs = for_each_row(argv[1], "hmac-vectors.tsv", hmac_row);
     const size_t proofs = for_each_row(argv[1], "proof-vectors.tsv", proof_row);
+    const size_t robot_proofs = for_each_row(argv[1], "robot-proof-vectors.tsv", robot_proof_row);
+    const size_t reflections = for_each_row(argv[1], "reflection-vectors.tsv", reflection_row);
     const size_t transitions = for_each_row(argv[1], "transition-vectors.tsv", transition_row);
     assert(transition_index == MOBY_EXPRESSION_COUNT);
     printf("vectors passed: %zu frame, %zu control (%zu built byte for byte), %zu COBS, %zu HMAC, %zu proof, "
-           "%zu transition rows\n",
-           frames, controls, built_rows, cobs, hmacs, proofs, transitions);
+           "%zu robot proof, %zu reflection, %zu transition rows\n",
+           frames, controls, built_rows, cobs, hmacs, proofs, robot_proofs, reflections, transitions);
     return 0;
 }

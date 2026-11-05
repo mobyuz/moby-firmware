@@ -557,6 +557,8 @@ static uint32_t src_events(void *ctx)
     return events;
 }
 
+// The desktop_nonce every test ack carries next to its proof (the same value as in robot-proof-vectors.tsv).
+#define TEST_DESKTOP_NONCE_HEX "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 static const uint8_t TEST_KEY[MOBY_USB_PAIR_KEY_BYTES] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
@@ -896,7 +898,7 @@ static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t 
     char nonce_hex[2 * MOBY_USB_NONCE_BYTES + 1];
     char device[MOBY_ID_MAX + 1];
     char json[JSON_MAX];
-    char proof[2 * MOBY_USB_PROOF_BYTES + 16] = "";
+    char proof[2 * MOBY_USB_PROOF_BYTES + 64] = "";
     field_of(hello, "id", id, sizeof id);
     field_of(hello, "nonce", nonce_hex, sizeof nonce_hex);
     field_of(hello, "device_id", device, sizeof device);
@@ -910,7 +912,7 @@ static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t 
         assert(moby_hmac_sha256(key, MOBY_USB_PAIR_KEY_BYTES, input, length, mac));
         strcpy(proof, ",\"proof\":\"");
         moby_hex_encode(mac, sizeof mac, proof + strlen(proof));
-        strcat(proof, "\"");
+        strcat(proof, "\",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"");
     }
     snprintf(json, sizeof json,
              "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":5,\"data\":{\"accepted\":%s%s%s%s%s,"
@@ -1334,6 +1336,59 @@ static void test_no_capture_bad_proof(void)
     handshake(fx, NULL);
     assert(fx->session.established && !fx->session.authenticated);
     expect_no_capture(fx);
+}
+
+// The robot's proof is the first message of an authenticated session, so it comes before the opening mute_changed
+// and long before any audio_start. An unauthenticated session gets no proof and never reaches audio_start.
+static void test_robot_proof_comes_before_any_audio(void)
+{
+    fx_t *fx = fx_init(TEST_KEY, CAPS_AUDIO, true);
+    fx->connected = true;
+    step(fx, 0);
+    mute(fx, false);
+    handshake(fx, TEST_KEY);
+    assert(fx->session.authenticated);
+    char json[JSON_MAX];
+    assert(next_msg(fx, json));
+    assert(strstr(json, "\"name\":\"session_proof\"") != NULL);
+    expect(fx, "mute_changed", "\"source\":\"boot\"");
+    press(fx);
+    // Everything from the ack to the first audio_start, in order: session_proof was first and is not repeated.
+    expect(fx, "button_event", "\"action\":\"press\"");
+    expect(fx, "audio_start", NULL);
+    mic(fx, 2);
+    release(fx);
+    step(fx, 100);
+    while (next_msg(fx, json)) {
+        assert(strstr(json, "session_proof") == NULL);
+    }
+}
+
+static void test_no_robot_proof_without_the_desktop_proof(void)
+{
+    uint8_t wrong[MOBY_USB_PAIR_KEY_BYTES];
+    memcpy(wrong, TEST_KEY, sizeof wrong);
+    wrong[0] ^= 1;
+    const uint8_t *keys[2] = { wrong, NULL };
+    for (int variant = 0; variant < 2; ++variant) {
+        fx_t *fx = fx_init(TEST_KEY, CAPS_AUDIO, true);
+        fx->connected = true;
+        step(fx, 0);
+        mute(fx, false);
+        handshake(fx, keys[variant]);
+        assert(fx->session.established && !fx->session.authenticated);
+        char json[JSON_MAX];
+        while (next_msg(fx, json)) {
+            assert(strstr(json, "session_proof") == NULL && strstr(json, "audio_start") == NULL);
+        }
+        press(fx);
+        mic(fx, 3);
+        step(fx, 3000);
+        while (next_msg(fx, json)) {
+            assert(strstr(json, "session_proof") == NULL && strstr(json, "audio_start") == NULL);
+        }
+        assert(fx->streams_seen == 0 && fx->audio_frames == 0 && !fx->mic_on);
+    }
 }
 
 static void test_no_capture_before_session_and_on_boot(void)
@@ -1855,6 +1910,8 @@ int main(void)
         { "mute at every point", test_mute_at_every_point },
         { "no capture, unpaired", test_no_capture_unpaired },
         { "no capture, bad or missing proof", test_no_capture_bad_proof },
+        { "robot proof comes before any audio", test_robot_proof_comes_before_any_audio },
+        { "no robot proof without the desktop proof", test_no_robot_proof_without_the_desktop_proof },
         { "no capture before a session or on boot", test_no_capture_before_session_and_on_boot },
         { "no capture without capability or ops", test_no_capture_without_capability_or_ops },
         { "no capture during pairing", test_no_capture_during_pairing },

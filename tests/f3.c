@@ -36,6 +36,7 @@ typedef struct {
     moby_decoder tx_decoder;
     // The fake platform.
     unsigned random_calls;
+    unsigned hmac_calls;
     bool random_ok;
     bool key_stored;
     uint8_t key[MOBY_USB_PAIR_KEY_BYTES];
@@ -103,7 +104,7 @@ static bool op_random(void *ctx, uint8_t *out, size_t length)
 static bool op_hmac(void *ctx, const uint8_t *key, size_t key_length, const uint8_t *message, size_t message_length,
                     uint8_t out[32])
 {
-    (void)ctx;
+    ++((fx_t *)ctx)->hmac_calls;
     return moby_hmac_sha256(key, key_length, message, message_length, out);
 }
 
@@ -144,6 +145,8 @@ static const uint8_t TEST_KEY[MOBY_USB_PAIR_KEY_BYTES] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 };
+// The desktop_nonce every test ack carries next to its proof (the same value as in robot-proof-vectors.tsv).
+#define TEST_DESKTOP_NONCE_HEX "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 static const char TEST_KEY_HEX[] = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 static fx_t *fx_init(const uint8_t *pair_key, uint32_t capabilities)
@@ -320,7 +323,7 @@ static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t 
     char nonce_hex[2 * MOBY_USB_NONCE_BYTES + 1];
     char device[MOBY_ID_MAX + 1];
     char json[JSON_MAX];
-    char proof[2 * MOBY_USB_PROOF_BYTES + 16] = "";
+    char proof[2 * MOBY_USB_PROOF_BYTES + 64] = "";
     field_of(hello, "id", id, sizeof id);
     field_of(hello, "nonce", nonce_hex, sizeof nonce_hex);
     field_of(hello, "device_id", device, sizeof device);
@@ -334,7 +337,7 @@ static void ack(fx_t *fx, const char *hello, const char *session, const uint8_t 
         assert(moby_hmac_sha256(key, MOBY_USB_PAIR_KEY_BYTES, input, length, mac));
         strcpy(proof, ",\"proof\":\"");
         moby_hex_encode(mac, sizeof mac, proof + strlen(proof));
-        strcat(proof, "\"");
+        strcat(proof, "\",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"");
     }
     snprintf(json, sizeof json,
              "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":5,\"data\":{\"accepted\":%s%s%s%s%s,"
@@ -357,6 +360,10 @@ static void establish(fx_t *fx, bool muted, const uint8_t *key)
     ack(fx, hello, "session_1", key, true);
     step(fx, 10);
     assert(fx->session.established);
+    if (fx->session.authenticated) {
+        // The robot's proof of the key is the first thing it sends on an authenticated session.
+        expect(fx, "session_proof", NULL);
+    }
     expect(fx, "mute_changed", "\"source\":\"boot\"");
 }
 
@@ -1294,11 +1301,16 @@ static void test_proof_accepted_with_protocol_vectors(void)
     char json[JSON_MAX];
     snprintf(json, sizeof json,
              "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":11,\"data\":{\"accepted\":true,"
-             "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"adfb56ea9a47e8af7dbf9cd7b9fc515b6099e510cc6862c072d7f1e29c1c95be\"}}",
+             "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"adfb56ea9a47e8af7dbf9cd7b9fc515b6099e510cc6862c072d7f1e29c1c95be\","
+             "\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"}}",
              id);
     desktop(fx, json);
     step(fx, 1);
     assert(fx->session.established && fx->session.authenticated);
+    // robot-proof-vectors.tsv robot_proof_1: the same key, both nonces, device and session give this proof.
+    assert(next_tx(fx, json));
+    assert(has(json, "\"name\":\"session_proof\""));
+    assert(has(json, "\"proof\":\"b3bae9e90d0e2cee7808185e64fd557087fc93f6e5e0e0c866467c2d28b921f4\""));
 }
 
 static void test_proof_separator_vectors(void)
@@ -1322,7 +1334,7 @@ static void test_proof_separator_vectors(void)
         // Session "c" with the "ab"/"c" proof is right; the "a"/"bc" proof must not verify for it.
         snprintf(json, sizeof json,
                  "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":1,\"data\":{\"accepted\":true,"
-                 "\"session_id\":\"%s\",\"config\":{},\"proof\":\"%s\"}}",
+                 "\"session_id\":\"%s\",\"config\":{},\"proof\":\"%s\",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"}}",
                  id, "c", proofs[attempt]);
         desktop(fx, json);
         step(fx, 1);
@@ -1342,6 +1354,7 @@ static void test_bad_and_missing_proof(void)
         uint8_t wrong[32];
         memcpy(wrong, TEST_KEY, sizeof wrong);
         wrong[5] ^= 0x40;
+        fx->hmac_calls = 0;
         if (variant == 0) {
             ack(fx, hello, "session_1", wrong, true);
         } else if (variant == 1) {
@@ -1365,7 +1378,7 @@ static void test_bad_and_missing_proof(void)
             char json[JSON_MAX];
             snprintf(json, sizeof json,
                      "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":1,\"data\":{\"accepted\":true,"
-                     "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"%s\"}}", id, proof);
+                     "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"%s\",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"}}", id, proof);
             desktop(fx, json);
         } else {
             // A proof recorded on an earlier connection: valid key, valid session, stale nonce.
@@ -1385,6 +1398,7 @@ static void test_bad_and_missing_proof(void)
             field_of(hello, "nonce", old_nonce, sizeof old_nonce);
             field_of(fresh, "nonce", new_nonce, sizeof new_nonce);
             assert(strcmp(old_nonce, new_nonce) != 0);
+            fx->hmac_calls = 0;
             // The recorded ack answers the old hello id, so the new attempt ignores it outright.
             ack(fx, hello, "session_1", TEST_KEY, true);
             step(fx, 10);
@@ -1403,15 +1417,19 @@ static void test_bad_and_missing_proof(void)
             char json[JSON_MAX];
             snprintf(json, sizeof json,
                      "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":1,\"data\":{\"accepted\":true,"
-                     "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"%s\"}}", id, proof);
+                     "\"session_id\":\"session_1\",\"config\":{},\"proof\":\"%s\",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"}}", id, proof);
             desktop(fx, json);
         }
         step(fx, 10);
         assert(fx->session.established && !fx->session.authenticated);
+        // A bad or missing desktop proof gets nothing back: the robot computes no proof of its own (the one HMAC
+        // is the check of the desktop's proof; a missing proof needs none) and sends no session_proof.
+        assert(fx->hmac_calls == (variant == 1 ? 0U : 1U));
         char json[JSON_MAX];
         bool saw_error = false;
         while (next_tx(fx, json)) {
             saw_error = saw_error || (has(json, "\"name\":\"error\"") && has(json, "E_STATE"));
+            assert(!has(json, "session_proof"));
         }
         assert(saw_error);
         assert(view_of(fx)->expression == MOBY_FACE_ERROR);
@@ -1428,6 +1446,12 @@ static void test_bad_and_missing_proof(void)
         expect_error(fx, "c-0004", "E_STATE");
         expect_error(fx, "c-0005", "E_UNSUPPORTED");
         assert(fx->session.config.speaker_volume == 50 && fx->session.text[0] == '\0');
+        // Later in the same session the robot still has nothing to prove with.
+        step(fx, 6000);
+        while (next_tx(fx, json)) {
+            assert(!has(json, "session_proof"));
+        }
+        assert(fx->hmac_calls == (variant == 1 ? 0U : 1U));
     }
 }
 
@@ -1481,6 +1505,12 @@ static void test_proof_ignored_when_unpaired(void)
     ack(fx, hello, "session_1", TEST_KEY, true);
     step(fx, 10);
     assert(fx->session.established && !fx->session.authenticated && !fx->session.paired);
+    // An unpaired robot has no key: it computes nothing and sends no session_proof, whatever the ack carries.
+    assert(fx->hmac_calls == 0);
+    char sent[JSON_MAX];
+    while (next_tx(fx, sent)) {
+        assert(!has(sent, "session_proof"));
+    }
     // The open session of an unpaired robot still takes harmless commands.
     drain(fx);
     controls(fx, false, false, false);
@@ -1488,6 +1518,219 @@ static void test_proof_ignored_when_unpaired(void)
     command(fx, "c-0001", "display_text", "{\"text\":\"hi\",\"ttl_ms\":1000}");
     step(fx, 0);
     expect_ok(fx, "c-0001");
+}
+
+// --- The robot's proof of the key (session_proof) ---------------------------------
+
+// HMAC-SHA256(key, "moby-robot-proof-v1" || 0 || desktop_nonce || robot_nonce || device_id || 0 || session_id),
+// built with the vendored input builder and the mbedTLS code the firmware links, as lowercase hex.
+static void robot_proof_hex(const uint8_t *key, const char *desktop_nonce_hex, const char *robot_nonce_hex,
+                            const char *device, const char *session, char out[65])
+{
+    uint8_t desktop_nonce[MOBY_USB_NONCE_BYTES];
+    uint8_t robot_nonce[MOBY_USB_NONCE_BYTES];
+    uint8_t input[256];
+    uint8_t mac[32];
+    size_t length = 0;
+    assert(moby_hex_decode(desktop_nonce_hex, 32, desktop_nonce, sizeof desktop_nonce));
+    assert(moby_hex_decode(robot_nonce_hex, 32, robot_nonce, sizeof robot_nonce));
+    assert(moby_robot_proof_input(desktop_nonce, robot_nonce, device, session, input, sizeof input, &length) == MOBY_OK);
+    assert(moby_hmac_sha256(key, MOBY_USB_PAIR_KEY_BYTES, input, length, mac));
+    moby_hex_encode(mac, sizeof mac, out);
+    out[64] = '\0';
+}
+
+// The desktop's own proof over (hello nonce, device_id, session_id), as lowercase hex.
+static void desktop_proof_hex(const uint8_t *key, const char *nonce_hex, const char *device, const char *session,
+                              char out[65])
+{
+    uint8_t nonce[MOBY_USB_NONCE_BYTES];
+    uint8_t input[256];
+    uint8_t mac[32];
+    size_t length = 0;
+    assert(moby_hex_decode(nonce_hex, 32, nonce, sizeof nonce));
+    assert(moby_session_proof_input(nonce, device, session, input, sizeof input, &length) == MOBY_OK);
+    assert(moby_hmac_sha256(key, MOBY_USB_PAIR_KEY_BYTES, input, length, mac));
+    moby_hex_encode(mac, sizeof mac, out);
+    out[64] = '\0';
+}
+
+static void test_robot_proof_follows_a_good_proof(void)
+{
+    fx_t *fx = fx_init(TEST_KEY, 0);
+    char hello[JSON_MAX];
+    fx->connected = true;
+    step(fx, 0);
+    controls(fx, false, false, false);
+    assert(next_tx(fx, hello));
+    char nonce_hex[40];
+    char device[MOBY_ID_MAX + 1];
+    field_of(hello, "nonce", nonce_hex, sizeof nonce_hex);
+    field_of(hello, "device_id", device, sizeof device);
+    fx->hmac_calls = 0;
+    ack(fx, hello, "session_1", TEST_KEY, true);
+    step(fx, 10);
+    assert(fx->session.established && fx->session.authenticated);
+    // One HMAC to check the desktop's proof, one to make the robot's.
+    assert(fx->hmac_calls == 2);
+
+    // session_proof is the first message after the ack, before the opening mute_changed.
+    char json[JSON_MAX];
+    assert(next_tx(fx, json));
+    assert(has(json, "\"kind\":\"event\",\"name\":\"session_proof\""));
+    char got[65];
+    char want[65];
+    field_of(json, "proof", got, sizeof got);
+    robot_proof_hex(TEST_KEY, TEST_DESKTOP_NONCE_HEX, nonce_hex, device, "session_1", want);
+    assert(strcmp(got, want) == 0);
+    // The desktop proof over the same session is a different value: neither can be shown as the other.
+    char desktop_proof[65];
+    desktop_proof_hex(TEST_KEY, nonce_hex, device, "session_1", desktop_proof);
+    assert(strcmp(got, desktop_proof) != 0);
+    expect(fx, "mute_changed", "\"source\":\"boot\"");
+
+    // It is sent once. The nonce of the hello is wiped, and no log line carries a nonce or a proof.
+    step(fx, 2000);
+    while (next_tx(fx, json)) {
+        assert(!has(json, "session_proof"));
+    }
+    for (size_t i = 0; i < sizeof fx->session.nonce; ++i) {
+        assert(fx->session.nonce[i] == 0);
+    }
+    assert(strstr(fx->log, nonce_hex) == NULL && strstr(fx->log, got) == NULL &&
+           strstr(fx->log, TEST_DESKTOP_NONCE_HEX) == NULL && strstr(fx->log, TEST_KEY_HEX) == NULL);
+    // Nothing the robot sent on the wire after the first message repeats the proof or the key.
+    for (size_t i = 0; i + 8 <= fx->tx_length; ++i) {
+        assert(memcmp(fx->tx + i, TEST_KEY, 8) != 0);
+    }
+}
+
+// The proof goes out only after the desktop's proof, and each new session gets its own, bound to the new nonces.
+static void test_robot_proof_is_fresh_for_every_session(void)
+{
+    fx_t *fx = fx_init(TEST_KEY, 0);
+    char seen[2][65];
+    for (int session = 0; session < 2; ++session) {
+        char hello[JSON_MAX];
+        char json[JSON_MAX];
+        fx->connected = true;
+        step(fx, session == 0 ? 0 : 1000);
+        controls(fx, false, false, false);
+        bool found = false;
+        while (next_tx(fx, json)) {
+            if (has(json, "\"name\":\"hello\"")) {
+                strcpy(hello, json);
+                found = true;
+            }
+        }
+        assert(found);
+        ack(fx, hello, "session_1", TEST_KEY, true);
+        step(fx, 10);
+        assert(fx->session.authenticated);
+        assert(next_tx(fx, json) && has(json, "session_proof"));
+        field_of(json, "proof", seen[session], sizeof seen[session]);
+        // End the session: the link drops.
+        fx->connected = false;
+        step(fx, 10);
+        drain(fx);
+        fx->tx_position = fx->tx_length = 0;
+        fx->tx_decoder.length = 0;
+        assert(!fx->session.established);
+    }
+    // Same key, device and session ID, but another hello nonce: another proof.
+    assert(strcmp(seen[0], seen[1]) != 0);
+}
+
+// The ack's two fields come together. A proof without the nonce, a nonce without the proof, a null, or a bad
+// nonce is not an ack the robot admits, so it computes nothing and sends nothing.
+static void test_ack_needs_proof_and_nonce_together(void)
+{
+    for (int variant = 0; variant < 7; ++variant) {
+        fx_t *fx = fx_init(TEST_KEY, 0);
+        char hello[JSON_MAX];
+        fx->connected = true;
+        step(fx, 0);
+        assert(next_tx(fx, hello));
+        char id[16];
+        char nonce_hex[40];
+        char device[MOBY_ID_MAX + 1];
+        char proof[65];
+        field_of(hello, "id", id, sizeof id);
+        field_of(hello, "nonce", nonce_hex, sizeof nonce_hex);
+        field_of(hello, "device_id", device, sizeof device);
+        desktop_proof_hex(TEST_KEY, nonce_hex, device, "session_1", proof);
+        char fields[200];
+        const char *forms[7] = {
+            ",\"proof\":\"%s\"",
+            ",\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"",
+            ",\"proof\":null,\"desktop_nonce\":\"" TEST_DESKTOP_NONCE_HEX "\"",
+            ",\"proof\":\"%s\",\"desktop_nonce\":null",
+            ",\"proof\":\"%s\",\"desktop_nonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1\"",
+            ",\"proof\":\"%s\",\"desktop_nonce\":\"0F1E2D3C4B5A69788796A5B4C3D2E1F0\"",
+            ",\"proof\":\"%s\",\"desktop_nonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\",\"extra\":1",
+        };
+        snprintf(fields, sizeof fields, forms[variant], proof);
+        char json[JSON_MAX];
+        snprintf(json, sizeof json,
+                 "{\"v\":1,\"kind\":\"response\",\"name\":\"hello_ack\",\"id\":\"%s\",\"ts_ms\":1,\"data\":{\"accepted\":true,"
+                 "\"session_id\":\"session_1\",\"config\":{}%s}}",
+                 id, fields);
+        fx->hmac_calls = 0;
+        desktop(fx, json);
+        step(fx, 10);
+        assert(!fx->session.established && !fx->session.authenticated);
+        assert(fx->hmac_calls == 0);
+        while (next_tx(fx, json)) {
+            assert(!has(json, "session_proof"));
+        }
+        // Nothing is stuck: a proper ack of the same hello still admits the session.
+        ack(fx, hello, "session_1", TEST_KEY, true);
+        step(fx, 10);
+        assert(fx->session.established && fx->session.authenticated);
+    }
+}
+
+// A session that pair_set_key authenticated has no desktop_nonce, so the robot has nothing to prove with:
+// it sends no session_proof there, and the desktop starts a new hello exchange (docs/protocol.md, step 8).
+static void test_pairing_session_has_no_robot_proof(void)
+{
+    fx_t *fx = fx_init(NULL, 0);
+    char hello[JSON_MAX];
+    fx->connected = true;
+    step(fx, 0);
+    controls(fx, false, false, false);
+    assert(next_tx(fx, hello));
+    ack(fx, hello, "session_1", NULL, true);
+    step(fx, 10);
+    command(fx, "c-0001", "pair_begin", "{\"timeout_ms\":30000}");
+    step(fx, 0);
+    press(fx);
+    step(fx, 0);
+    command(fx, "c-0002", "pair_set_key", "{\"pair_key\":\"" "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" "\"}");
+    step(fx, 0);
+    assert(fx->session.paired && fx->session.authenticated);
+    assert(fx->hmac_calls == 0);
+    char json[JSON_MAX];
+    while (next_tx(fx, json)) {
+        assert(!has(json, "session_proof"));
+    }
+    // The next session, with a proof and a nonce from the desktop, is proven.
+    fx->connected = false;
+    step(fx, 10);
+    fx->connected = true;
+    step(fx, 1000);
+    bool found = false;
+    while (next_tx(fx, json)) {
+        if (has(json, "\"name\":\"hello\"")) {
+            strcpy(hello, json);
+            found = true;
+        }
+    }
+    assert(found && has(hello, "\"paired\":true"));
+    ack(fx, hello, "session_2", TEST_KEY, true);
+    step(fx, 10);
+    assert(fx->session.authenticated);
+    assert(next_tx(fx, json) && has(json, "session_proof"));
 }
 
 // --- Mute, buttons and the face -------------------------------------------------
@@ -1976,6 +2219,10 @@ int main(int argc, char **argv)
         { "bad and missing proof", test_bad_and_missing_proof },
         { "ack config needs a proven session", test_ack_config_needs_a_proven_session },
         { "proof ignored when unpaired", test_proof_ignored_when_unpaired },
+        { "robot proof follows a good proof", test_robot_proof_follows_a_good_proof },
+        { "robot proof is fresh for every session", test_robot_proof_is_fresh_for_every_session },
+        { "ack needs proof and nonce together", test_ack_needs_proof_and_nonce_together },
+        { "pairing session has no robot proof", test_pairing_session_has_no_robot_proof },
         { "mute wins in every state", test_mute_wins_in_every_state },
         { "mute beats error and disconnect", test_mute_beats_error_and_disconnect },
         { "button events", test_button_events },
