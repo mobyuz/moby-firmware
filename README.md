@@ -76,10 +76,11 @@ Kundalik F0/F1 image’ini yuklash uchun odatiy `idf.py -p $boardPort flash moni
 
 F3 odatiy image’ga moby-protocol’ning USB v1 aloqasini qo‘shadi. Protokol **USB-Serial-JTAG** portida (plata USB-C porti) yuradi. Jurnal va konsol UART0’da qoladi, USB port faqat kadrlar uchun. Yuz F3’siz ham ishlaydi: aloqa bo‘lmasa ko‘zlar kiprik qoqadi, apparat mute doim birinchi. Qaror va chegaralar: [ADR 0001](docs/adr/0001-f3-usb-link.md).
 
-- `components/moby_protocol/` moby-protocol’ning `9032acb` commitidan **vaqtinchalik** ko‘chirma. Reliz tegi chiqqach, uni reliz artefakti almashtiradi. Kelib chiqishi va nazorat summalari `PROVENANCE.md`da.
+- `components/moby_protocol/` moby-protocol’ning `0ddc9a9` commitidan (`claude/mutual-auth`) **vaqtinchalik** ko‘chirma. Reliz tegi chiqqach, uni reliz artefakti almashtiradi. Kelib chiqishi va nazorat summalari `PROVENANCE.md`da.
 - Ulanishda darhol `hello`, `hello_ack` kelguncha har soniya qayta yuboriladi, 3 soniyada yangi nonce bilan qayta boshlanadi. Seansdan keyin har 2 soniyada `heartbeat`. Desktop tomondan 3 ta heartbeat javobsiz qolsa seans tugaydi, buferlar tozalanadi, yuz uzilishni ko‘rsatadi. Protokolda desktop heartbeat’i yo‘q, shuning uchun desktop kamida har 2 soniyada biror buyruq (masalan bo‘sh `set_config`) yuborishi kerak.
 - Buyruqlar: `expression`, `display_text`, `cancel`, `set_config`, `pair_begin`, `pair_set_key`. `servo_pose` va `audio_play_*` uchun `E_UNSUPPORTED`. Desktop audio kadrlari rad etiladi. Bu bosqichda mikrofon ishga tushmaydi, audio yo‘li yo‘q, odatiy image hech qanday imkoniyat e’lon qilmaydi.
 - Juftlash: `pair_begin` faqat juftlanmagan robotda qabul qilinadi, juftlangan robot `E_STATE` qaytaradi. Talk tugmasi bosilsa `pair_button_confirmed` ketadi, shundan keyingina `pair_set_key` qabul qilinadi. Talk’ni 10 soniya ushlab turish juftlashni o‘chiradi va `pair_reset` yuboradi. `device_id` birinchi yuklanishda tasodifiy 128 bitdan yaratiladi, `pair_key` NVS’da. Kalit, nonce va dalil jurnalga chiqmaydi.
+- Robotning dalili (2026-11-05): desktop dalili tasdiqlangandan keyin robot `session_proof` hodisasini seansning birinchi hodisasi sifatida, audiodan oldin yuboradi (`HMAC-SHA256(pair_key, "moby-robot-proof-v1" || 0x00 || desktop_nonce || robot_nonce || device_id || 0x00 || session_id)`). Noto‘g‘ri yoki yo‘q desktop dalili uchun robot hech narsa hisoblamaydi va yubormaydi; juftlanmagan robot ham. `pair_set_key` ochgan seansda `desktop_nonce` yo‘q, shuning uchun u seansda dalil yo‘q va desktop qayta ulanadi. Sabablar: [ADR 0003](docs/adr/0003-robot-proof.md). Platada sinalmagan.
 
 F3 host testlari (MSVC yoki `cc`, cJSON va mbedTLS ESP-IDF daraxtidan olinadi):
 
@@ -87,7 +88,7 @@ F3 host testlari (MSVC yoki `cc`, cJSON va mbedTLS ESP-IDF daraxtidan olinadi):
 .\tests\run_f3.ps1
 ```
 
-Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 95 boshqaruv qatori, COBS, HMAC, sessiya dalili) va 42 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build default` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
+Linux’da: `sh tests/run_f3.sh`. Ular protokol vektorlarini firmware kodidan o‘tkazadi (kadrlar, 116 boshqaruv qatori, COBS, HMAC, sessiya va robot dalili) va 47 ta seans, juftlash, mute, buzuq kirish hamda maxfiylik testini ishga tushiradi. Yig‘ilgan image’ni `sh tests/check_image.sh build default` tekshiradi: audio va I2S kodi yo‘q, konsol UART’da.
 
 **Hali platani talab qiladigan narsalar (tekshirilmagan):**
 
